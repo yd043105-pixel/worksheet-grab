@@ -210,24 +210,15 @@ def _boxes_close(first: tuple[float, float, float, float], second: tuple[float, 
     )
 
 
-def _is_page_furniture(box: tuple[float, float, float, float], width: float, height: float) -> bool:
-    box_width = box[2] - box[0]
-    box_height = box[3] - box[1]
-    near_edge = box[1] <= height * 0.04 or box[3] >= height * 0.96
-    return (box_width >= width * 0.8 and box_height <= 4 and near_edge) or (
-        box_height >= height * 0.8 and box_width <= 4
-    )
-
-
 def _box_intersects_page(box: tuple[float, float, float, float], width: float, height: float) -> bool:
     return box[2] > 0 and box[3] > 0 and box[0] < width and box[1] < height
 
 
-def _vector_groups(page, table_boxes: list[tuple[float, float, float, float]], width: float, height: float) -> list[tuple[tuple[float, float, float, float], int]]:
+def _vector_groups(page, table_boxes: list[tuple[float, float, float, float]]) -> list[tuple[tuple[float, float, float, float], int]]:
     objects = []
     for obj in list(page.lines) + list(page.rects) + list(page.curves):
         box = _object_box(obj)
-        if box is None or _is_page_furniture(box, width, height):
+        if box is None:
             continue
         center = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
         if any(table[0] <= center[0] <= table[2] and table[1] <= center[1] <= table[3] for table in table_boxes):
@@ -247,10 +238,6 @@ def _vector_groups(page, table_boxes: list[tuple[float, float, float, float]], w
     result = []
     for group in groups:
         box = _box_union(group)
-        if box[2] - box[0] < 12 or box[3] - box[1] < 12:
-            continue
-        if (box[2] - box[0]) * (box[3] - box[1]) < width * height * 0.0015:
-            continue
         result.append((box, len(group)))
     return sorted(result, key=lambda item: (item[0][1], item[0][0], item[0][3], item[0][2], item[1]))
 
@@ -321,7 +308,7 @@ def _visual_atoms(page, source_page: int, source_hash: str, width: float, height
             atoms.append({"kind": "nativeImage", "box": box, "objectCount": 1})
     atoms.extend(
         {"kind": "vectorGroup", "box": box, "objectCount": count}
-        for box, count in _vector_groups(page, table_boxes, width, height)
+        for box, count in _vector_groups(page, table_boxes)
     )
     atoms = [atom for atom in atoms if _box_intersects_page(atom["box"], width, height)]
     atoms.sort(key=lambda atom: (atom["box"][1], atom["box"][0], atom["box"][3], atom["box"][2], atom["kind"], atom["objectCount"]))
@@ -355,6 +342,7 @@ def _extract_one_page(page, rendered_page: Path, source_hash: str, source_page: 
         "sourcePage": source_page,
         "sourceSha256": source_hash,
         "pageSize": (round(width, 6), round(height, 6)),
+        "bounds": (0.0, 0.0, 1.0, 1.0),
         "renderedPage": rendered_page.name,
         "textBlocks": _text_blocks(page, source_page, source_hash, width, height),
         "visualAtoms": _visual_atoms(page, source_page, source_hash, width, height),
