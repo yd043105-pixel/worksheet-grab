@@ -65,8 +65,11 @@ async function boot(prefix) {
 }
 
 const teardown = async (server, s) => {
-  await new Promise((r) => server.close(r));
-  await s.close();
+  try {
+    await s.close();
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
 };
 
 /** 캔버스 안 선택자의 뷰포트 중심(줌 보정) — 실마우스에 넘길 값. */
@@ -124,6 +127,7 @@ test('셀에 붙여넣은 값이 모델까지 반영돼 재렌더 뒤에도 남�
   const { server, s } = await boot('paste-cell-survive-');
   try {
     await dblclick(s, 'td[data-r="0"][data-c="0"]');
+    await s.waitFor(`${CV}.querySelector('td[data-r="0"][data-c="0"].wg-cell-editing')`, { message: '셀 편집에 진입' });
     JSON.parse(await s.evaluate(dispatchPaste('td[data-r="0"][data-c="0"]', DIRTY_HTML)));
     await s.press('Escape');
 
