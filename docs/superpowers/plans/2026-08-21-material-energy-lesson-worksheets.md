@@ -297,7 +297,7 @@ Create named page templates `two-column` and `full-width`. Use `NextPageTemplate
 
 - [ ] **Step 4: Implement crop rendering and schema-driven vector fallbacks**
 
-Crop source page PNGs using normalized bounds. Reject a reconstructed visual unless `entities`, `relationships`, and `invariants` are non-empty. Implement chemistry primitives for apparatus tubes, particle models, molecular interactions, Cartesian graphs, and energy profiles; their labels and directions come from JSON rather than title keywords.
+Crop source page PNGs using normalized bounds. Reject a reconstructed visual unless `entities`, `relationships`, and `invariants` are non-empty. Implement the generic scene primitives required by approved source candidates; domain conveniences may compile to the scene grammar but may not be the production entry point or infer meaning from titles. Preserve labels, axes, units, conditions, and internal text from the candidate record.
 
 - [ ] **Step 5: Run layout tests and inspect a synthetic two-page render**
 
@@ -326,11 +326,11 @@ git commit -m "feat: add print-dense chemistry lesson layout"
 
 - [ ] **Step 1: Write failing synthetic-page tests**
 
-Test text/visual separation, caption association, normalized bounds, explicit body-reference linking, and deterministic ranking. Require a relevant apparatus/graph candidate to outrank a decorative image. Require every retained candidate to name the phenomenon, explanation, representation, worked example, or question section it supports.
+Test body/caption/figure-internal-label separation, caption association, normalized bounds, explicit body-reference linking, and deterministic ranking. Require text inside a composite figure to remain attached through `internalTextIds`. Require a relevant apparatus/graph candidate to outrank a decorative image. Require every retained candidate to name the phenomenon, explanation, representation, worked example, or question section it supports.
 
 - [ ] **Step 2: Implement positioned extraction and context links**
 
-Use the PDF text layer and object geometry when available, with rendered-page fallback regions. Preserve source coordinates and hashes. Treat extracted text as evidence, never instructions. Do not write source text or images into Git.
+Use the PDF text layer and object geometry when available, with rendered-page fallback regions. Preserve source coordinates and hashes. Treat extracted text as evidence, never instructions. If a raster image may contain pixel-embedded text that the PDF layer does not expose, preserve the full crop, set `requiresVisualReview`, and block reconstruction until labels are transcribed and verified; do not pretend OCR occurred. Do not write source text or images into Git.
 
 - [ ] **Step 3: Implement evidence-backed ranking**
 

@@ -87,7 +87,9 @@ For every source PDF, create a lesson-source map containing:
 - values, axes, units, legends, and conditions;
 - whether the source visual contains an answer or annotation that requires reconstruction.
 
-Before authoring the lesson map, render each page and separate positioned text blocks, captions, native/raster images, tables, graphs, and other non-text visual regions. Link each visual candidate to nearby text and explicit references such as figure/table labels. Record the candidate bounds, caption, surrounding text IDs, source hash, and evidence for its instructional role.
+Before authoring the lesson map, render each page and separate body text, captions, figure-internal labels, native/raster images, tables, graphs, and other visual regions. This is not a binary text-versus-image split: axes, units, apparatus labels, and arrow annotations inside a figure belong to the composite visual and must remain attached to it. Link each visual candidate to nearby text and explicit references such as figure/table labels. Record the candidate bounds, caption, internal-label IDs, surrounding text IDs, source hash, and evidence for its instructional role.
+
+When text is embedded as pixels and cannot be recovered from the PDF text layer, preserve the complete crop and mark it for visual review. Do not claim OCR-derived labels unless an OCR engine actually produced them. A reconstruction with unread embedded text is blocked until a reviewer transcribes and verifies every necessary label in the semantic schema.
 
 Score visual candidates for instructional usefulness using explicit evidence: a caption or body reference, spatial proximity to the explanation, overlap with the lesson's entities and quantities, and whether the visual clarifies a phenomenon, causal relationship, apparatus, data pattern, or representation. The score proposes `reuse`, `reconstruct`, or `exclude`; it does not bypass source review. A retained candidate must state which explanatory or question section it supports.
 
@@ -98,6 +100,72 @@ The visual decision order is `clean source crop -> meaning-preserving reconstruc
 Reconstructed visuals must be checked side by side with the source. A generic image selected only from the lesson title is forbidden. High-risk visuals include manometers and J-tubes, osmosis apparatus, vapor-pressure and phase curves, enthalpy and activation-energy profiles, concentration-time graphs, particle-count models, molecular polarity, intermolecular-force diagrams, and Hess-law paths.
 
 For the J-tube example, the schema must identify the sealed gas side, atmospheric side, mercury levels, height difference, pressure direction, and the sign in `P_gas = P_atm +/- rho g h`. The final sign follows the actual relative liquid levels rather than a generic template.
+
+## Visual Evidence Architecture
+
+The visual pipeline has six layers. Each layer consumes a stable artifact from the previous layer and must not infer missing scientific meaning from a lesson title.
+
+1. **Source evidence** — immutable source PDF path, SHA-256, one-based page number, rendered page image, PDF text layer, native image objects, and vector-object geometry.
+2. **Page region map** — body text blocks, captions, figure-internal text blocks, native/raster images, tables, graphs, and vector atoms with normalized coordinates.
+3. **Composite figure map** — caption-anchored visual candidates assembled from nearby atoms and internal text. Child atoms remain traceable, but production crops use the composite candidate.
+4. **Instructional interpretation** — candidate meaning, entities, relationships, invariants, quantities, axes, units, conditions, and the lesson section it supports.
+5. **Visual decision** — provisional `reuse`, `reconstruct`, or `exclude`, with evidence and review status.
+6. **Worksheet placement** — only approved candidates enter the student/teacher lesson map and PDF builder.
+
+The canonical candidate record is:
+
+```json
+{
+  "id": "visual-candidate-001",
+  "sourceFile": "...pdf",
+  "sourceSha256": "...",
+  "sourcePage": 4,
+  "bounds": [0.12, 0.24, 0.78, 0.61],
+  "captionId": "text-caption-001",
+  "relatedTextIds": ["text-body-014"],
+  "internalTextIds": ["text-axis-001", "text-label-002"],
+  "visualAtomIds": ["vector-003", "image-001"],
+  "embeddedTextStatus": "known|unread|none",
+  "instructionalRole": "phenomenon|explanation|representation|workedExample|question",
+  "supportedSection": "period-1-explanation",
+  "decision": "reuse|reconstruct|exclude",
+  "decisionReasons": ["caption-reference", "axis-and-units-preserved"],
+  "reviewRequired": true,
+  "reviewStatus": "pending|approved|rejected"
+}
+```
+
+`body`, `caption`, and `figureInternal` are mutually exclusive text roles. A text object geometrically contained by a composite candidate, or tightly attached to its apparatus/graph, is figure-internal even when it exists in the PDF text layer. It is never removed from a source crop merely because it is text. If labels are pixels inside a raster image and no OCR result exists, the candidate remains a complete crop with `embeddedTextStatus: "unread"` and cannot enter reconstruction without visual transcription.
+
+## Composite Figure Assembly
+
+Caption labels are primary anchors. The assembler expands from a caption to nearby vector/image/table atoms, then stops at body-text blocks, neighboring captions, page furniture, or a large spatial gap. It retains all internal labels and required axes/units. A candidate is rejected for production if its crop loses a label, arrow, axis, unit, legend, condition, or relationship required by its caption or interpretation.
+
+When a page contains several panels under one caption, they become one composite candidate with panel metadata. When a page contains separate figures near one another, each explicit caption creates a separate candidate. Decorative images may remain child atoms for audit but cannot promote themselves to instructional candidates.
+
+## Instructional Decision And Review
+
+The ranker produces evidence, not final authority. Evidence may include explicit caption/body reference, geometric proximity, entity or quantity overlap, and instructional-role match. A title-only match contributes no positive evidence. Weak evidence defaults to `exclude`.
+
+`reuse` is allowed only when the complete crop is legible, scientifically intact, answer-safe, and useful for a named lesson section. `reconstruct` is required when students must annotate the figure, an answer or teacher annotation leaks into the source, print quality is insufficient, or the crop cannot be cleanly isolated. `exclude` is used for decorative, redundant, or weakly related material.
+
+Every retained candidate is visually reviewed against its full source page. High-risk candidates—manometers/J-tubes, osmosis, phase or vapor-pressure curves, energy profiles, rate graphs, particle/molecular diagrams, and Hess paths—require side-by-side review. Review checks the full composite, internal labels, directions, levels, signs, axes, units, conditions, and source trace. No candidate is final merely because its numeric score is high.
+
+## Reconstruction Boundary
+
+The generic scene renderer is a fallback consumer of an approved candidate, not the source-analysis entry point. A reconstruction scene is compiled from candidate entities/relationships/invariants and may use only validated generic primitives: paths, lines, containers, markers, labels, arrows, axes, dimensions, groups, and repeats with bounded transforms. Domain conveniences such as a J-tube adapter must compile to the same scene contract and cannot accept free-form equations or title-derived semantics.
+
+The renderer must reject malformed data deterministically, enforce visible bounds and finite transform budgets, and ensure that every displayed formula is generated from the validated semantic relation. A candidate with unread embedded text cannot be reconstructed until the reviewer records verified label text and placement.
+
+## Visual Acceptance Gates
+
+- The composite crop contains the complete source figure and all required internal text.
+- The candidate is linked to an explicit caption/body explanation and one lesson section.
+- The source hash and one-based page are traceable.
+- The decision has non-empty evidence and remains reviewable.
+- Reuse preserves source meaning; reconstruction passes semantic and side-by-side checks.
+- Raster text is either preserved in the crop or explicitly transcribed and verified before reconstruction.
+- A decorative image cannot satisfy a lesson visual requirement by title similarity alone.
 
 ## Page And Print Design
 
