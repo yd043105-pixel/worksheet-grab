@@ -21,6 +21,7 @@ from tools.lesson_packet.source_extract import (
     render_all_sources,
     render_source_pages,
     validate_visual_map,
+    _audit_representatives,
 )
 from tools.lesson_packet.visuals import reconstructed_visual_flowable
 from fixtures import valid_lesson_dict
@@ -234,6 +235,34 @@ class SourceExtractTests(unittest.TestCase):
 
 
 class SourceRegionTests(unittest.TestCase):
+    def test_representative_audit_matches_candidate_related_text(self):
+        candidate = {
+            "id": "rate-graph",
+            "captionText": "의 몰농도 | 그림 - 2 |",
+            "relatedText": [{"text": "반응 속도는 시간에 따라 감소한다."}],
+            "internalText": [{"text": "농도 (M) 시간 (s)"}],
+            "decision": "reuse",
+            "bounds": [0.2, 0.2, 0.8, 0.7],
+            "visualAtomIds": [],
+        }
+        manifest = {
+            "sourceStem": "4-1-1. 화학 반응 속도(2차시 분량)",
+            "pages": [{
+                "textBlocks": [{
+                    "role": "caption",
+                    "text": "의 몰농도 | 그림 - 2 |",
+                    "bounds": [0.2, 0.75, 0.8, 0.8],
+                }],
+                "visualAtoms": [],
+                "visualCandidates": [candidate],
+            }],
+        }
+
+        representative = _audit_representatives([manifest])[-3]
+
+        self.assertEqual(representative["id"], "reaction-rate-graph")
+        self.assertEqual(representative["candidateIds"], ["rate-graph"])
+
     def test_canonical_page_evidence_is_available_from_the_compatibility_surface(self):
         with tempfile.TemporaryDirectory() as directory:
             pdf, rendered = _write_region_fixture(Path(directory))
@@ -503,6 +532,100 @@ class SourceRegionTests(unittest.TestCase):
             second = subprocess.run(command, check=False, capture_output=True, text=True)
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(manifest_bytes, manifest_path.read_bytes())
+
+    def test_candidates_all_writes_audit_packets_and_byte_identical_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_root = root / "sources"
+            source_root.mkdir()
+            pdf, fixture_pages = _write_region_fixture(source_root)
+            pdf = pdf.rename(source_root / "fixture(1차시 분량).pdf")
+            pages_root = root / "pages"
+            pages_root.mkdir()
+            fixture_pages.rename(pages_root / pdf.stem)
+            source_hash = hashlib.sha256(pdf.read_bytes()).hexdigest()
+            index = root / "source-index.json"
+            index.write_text(json.dumps([{
+                "sourceFile": pdf.name,
+                "sourceStem": pdf.stem,
+                "lessonCount": 1,
+                "pageCount": 1,
+                "sha256": source_hash,
+            }], ensure_ascii=False), encoding="utf-8")
+
+            def run(output):
+                command = [
+                    sys.executable,
+                    "tools/lesson_packet/source_extract.py",
+                    "candidates-all",
+                    "--index", str(index),
+                    "--pages", str(pages_root),
+                    "--out", str(output),
+                    "--source-root", str(source_root),
+                ]
+                result = subprocess.run(command, check=False, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+            first_out = root / "first"
+            second_out = root / "second"
+            run(first_out)
+            run(second_out)
+
+            audit = json.loads((first_out / "audit.json").read_text(encoding="utf-8"))
+            self.assertEqual(audit["manifestCount"], 1)
+            self.assertEqual(audit["pageCount"], 1)
+            self.assertTrue(audit["invariants"]["allSourceHashesValid"])
+            self.assertTrue(audit["invariants"]["allBoundsNormalized"])
+            self.assertTrue(audit["invariants"]["allCandidatesReviewRequired"])
+            self.assertTrue(audit["invariants"]["allRetainedDecisionReasonsPresent"])
+            self.assertTrue(audit["invariants"]["allRetainedSupportedSectionsPresent"])
+            self.assertTrue((first_out / "reviews.json").is_file())
+            reviews = json.loads((first_out / "reviews.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(reviews), audit["reviewCount"])
+            crop_paths = list((first_out / "crops").glob("*.png"))
+            review_paths = list((first_out / "review").glob("*.png"))
+            self.assertEqual(len(crop_paths), len(review_paths))
+            self.assertGreater(len(crop_paths), 0)
+
+            manifest = json.loads((first_out / f"{pdf.stem}.json").read_text(encoding="utf-8"))
+            for page in manifest["pages"]:
+                self.assertEqual(page["sourceSha256"], source_hash)
+                for record in page["textBlocks"] + page["visualAtoms"]:
+                    self.assertEqual(record["sourcePage"], page["sourcePage"])
+                    self.assertEqual(record["sourceSha256"], source_hash)
+                    left, top, right, bottom = record["bounds"]
+                    self.assertTrue(0 <= left < right <= 1)
+                    self.assertTrue(0 <= top < bottom <= 1)
+                for candidate in page["visualCandidates"]:
+                    self.assertEqual(candidate["sourceSha256"], source_hash)
+                    self.assertTrue(candidate["reviewRequired"])
+                    self.assertEqual(candidate["reviewStatus"], "pending")
+                    self.assertTrue(candidate["cropPath"].startswith("crops/"))
+                    self.assertTrue(candidate["reviewPacketPath"].startswith("review/"))
+                    self.assertTrue(candidate["decisionReasons"])
+                    if candidate["decision"] != "exclude":
+                        self.assertTrue(candidate["supportedSection"])
+                    if candidate["embeddedTextStatus"] == "unread":
+                        self.assertEqual(candidate["decision"], "reconstruct")
+                        self.assertTrue(candidate["reconstructionBlocked"])
+                        self.assertIn("label-transcription-required", candidate["blockingReasons"])
+
+            self.assertTrue(all(review["status"] == "pending" for review in reviews))
+
+            first_json = sorted(path.relative_to(first_out).as_posix() for path in first_out.rglob("*.json"))
+            second_json = sorted(path.relative_to(second_out).as_posix() for path in second_out.rglob("*.json"))
+            self.assertEqual(first_json, second_json)
+            for relative in first_json:
+                self.assertEqual(
+                    (first_out / relative).read_bytes(),
+                    (second_out / relative).read_bytes(),
+                    relative,
+                )
+            first_png = sorted((path.relative_to(first_out).as_posix(), hashlib.sha256(path.read_bytes()).hexdigest())
+                               for path in first_out.rglob("*.png"))
+            second_png = sorted((path.relative_to(second_out).as_posix(), hashlib.sha256(path.read_bytes()).hexdigest())
+                                for path in second_out.rglob("*.png"))
+            self.assertEqual(first_png, second_png)
 
 
 class VisualCandidateRankingTests(unittest.TestCase):

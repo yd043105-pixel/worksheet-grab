@@ -4,11 +4,13 @@ import hashlib
 import json
 import math
 import re
+import shutil
 from pathlib import Path
 
 import pdfplumber
 import pypdfium2 as pdfium
 from pypdf import PdfReader
+from PIL import Image as PillowImage
 
 try:
     from tools.lesson_packet.source_evidence import extract_page_evidence, normalize_bounds, sha256_file
@@ -23,6 +25,28 @@ except ModuleNotFoundError as error:
     if error.name != "tools":
         raise
     from visuals import validate_reconstructed_visual
+
+try:
+    from tools.lesson_packet.figure_assembly import assemble_composite_figures
+    from tools.lesson_packet.source_evidence import extract_page_evidence
+    from tools.lesson_packet.visual_ranking import (
+        link_candidate_context as link_canonical_candidate_context,
+        rank_visual_candidate as rank_canonical_visual_candidate,
+    )
+    from tools.lesson_packet.visual_review import REQUIRED_CHECKS, render_review_packet
+except ModuleNotFoundError as error:
+    if error.name != "tools":
+        raise
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from figure_assembly import assemble_composite_figures
+    from source_evidence import extract_page_evidence
+    from visual_ranking import (
+        link_candidate_context as link_canonical_candidate_context,
+        rank_visual_candidate as rank_canonical_visual_candidate,
+    )
+    from visual_review import REQUIRED_CHECKS, render_review_packet
 
 
 LESSON_RE = re.compile(r"\((\d+)차시 분량\)\.pdf$")
@@ -846,6 +870,211 @@ def _source_lesson_evidence(pages: list[dict]) -> dict:
     return {"sections": sections}
 
 
+def _canonical_lesson_evidence(source_stem: str, pages: list[dict]) -> dict:
+    texts = [
+        block.get("text", block.get("matchText", ""))
+        for page in pages
+        for block in page.get("textBlocks", [])
+        if isinstance(block, dict) and _nonempty_text(block.get("text", block.get("matchText", "")))
+    ]
+    references = [
+        text
+        for page in pages
+        for block in page.get("textBlocks", [])
+        if isinstance(block, dict)
+        and block.get("role") in {"body", "caption"}
+        and isinstance((text := block.get("text", block.get("matchText", ""))), str)
+        and REFERENCE_RE.search(text)
+    ]
+    return {
+        "sections": {source_stem: texts},
+        "entities": texts,
+        "quantities": texts,
+        "explicitReferences": references,
+    }
+
+
+def _safe_candidate_id(source_stem: str, source_page: int, local_id: str) -> str:
+    safe_stem = re.sub(r"[^\w.-]+", "-", source_stem, flags=re.UNICODE).strip("-._")
+    if not safe_stem:
+        safe_stem = hashlib.sha256(source_stem.encode("utf-8")).hexdigest()[:12]
+    safe_local = re.sub(r"[^\w.-]+", "-", local_id, flags=re.UNICODE).strip("-._")
+    return f"{safe_stem}-p{source_page:03d}-{safe_local}"
+
+
+def _pixel_crop(bounds: list[float], width: int, height: int) -> tuple[int, int, int, int]:
+    left = max(0, min(width - 1, math.floor(bounds[0] * width)))
+    top = max(0, min(height - 1, math.floor(bounds[1] * height)))
+    right = max(left + 1, min(width, math.ceil(bounds[2] * width)))
+    bottom = max(top + 1, min(height, math.ceil(bounds[3] * height)))
+    return left, top, right, bottom
+
+
+def _write_candidate_crop(rendered_page: Path, bounds: list[float], output: Path) -> None:
+    try:
+        with PillowImage.open(rendered_page) as source:
+            image = source.convert("RGB")
+    except (OSError, ValueError) as error:
+        raise ValueError(f"could not open rendered page: {rendered_page}") from error
+    crop = image.crop(_pixel_crop(bounds, image.width, image.height))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        crop.save(output, format="PNG", optimize=False, compress_level=9)
+    except OSError as error:
+        raise ValueError(f"could not write candidate crop: {output}") from error
+
+
+def _normalized_bounds_valid(value: object) -> bool:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return False
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item) for item in value):
+        return False
+    return 0 <= value[0] < value[2] <= 1 and 0 <= value[1] < value[3] <= 1
+
+
+def _audit_representatives(manifests: list[dict]) -> list[dict]:
+    specifications = (
+        ("gas-pressure-boyle-j-tube", ("1-1-1.",), ("boyle", "보일", "j자", "j tube", "j-")),
+        ("osmosis-figures-13-14", ("2-2-3.",), ("그림 - 13", "그림 - 14", "figure 13", "figure 14")),
+        ("reaction-rate-graph", ("4-1-1.",), ("반응 속도", "reaction rate", "농도 그래프")),
+        ("enthalpy-graphs", ("3-1-1.",), ("엔탈피", "enthalpy", "그림 - 6", "그림 - 7")),
+        ("activation-energy-graphs", ("4-1-3.",), ("활성화 에너지", "activation energy", "그림 - 7")),
+    )
+    results = []
+    for representative_id, stem_prefixes, terms in specifications:
+        matching = [manifest for manifest in manifests if manifest["sourceStem"].startswith(stem_prefixes)]
+        pages = [page for manifest in matching for page in manifest["pages"]]
+        candidates = [candidate for page in pages for candidate in page.get("visualCandidates", [])]
+        caption_texts = [
+            block.get("text", "")
+            for page in pages
+            for block in page.get("textBlocks", [])
+            if block.get("role") == "caption"
+        ]
+        term_text = " ".join(
+            [*caption_texts]
+            + [
+                block.get("text", "")
+                for page in pages
+                for block in page.get("textBlocks", [])
+                if isinstance(block, dict)
+            ]
+        ).casefold()
+        matched_terms = [term for term in terms if term.casefold() in term_text]
+        candidate_ids = [
+            candidate["id"]
+            for candidate in candidates
+            if any(term.casefold() in str(candidate.get("captionText", "")).casefold() for term in terms)
+        ]
+        fragmentation = []
+        neighbor_merges = []
+        axis_omissions = []
+        decorative_retention = []
+        for page in pages:
+            captions = [
+                block for block in page.get("textBlocks", []) if block.get("role") == "caption"
+            ]
+            for candidate in page.get("visualCandidates", []):
+                selected = set(candidate.get("visualAtomIds", []))
+                other_atoms = [
+                    atom for atom in page.get("visualAtoms", [])
+                    if atom.get("id") not in selected
+                    and _normalized_bounds_valid(atom.get("bounds"))
+                    and _normalized_bounds_valid(candidate.get("bounds"))
+                    and not (
+                        atom["bounds"][2] <= candidate["bounds"][0]
+                        or atom["bounds"][0] >= candidate["bounds"][2]
+                        or atom["bounds"][3] <= candidate["bounds"][1]
+                        or atom["bounds"][1] >= candidate["bounds"][3]
+                    )
+                ]
+                if other_atoms:
+                    fragmentation.append(candidate["id"])
+                for caption in captions:
+                    if caption.get("id") == candidate.get("captionId"):
+                        continue
+                    if _normalized_bounds_valid(caption.get("bounds")) and _normalized_bounds_valid(candidate.get("bounds")):
+                        if not (
+                            caption["bounds"][2] <= candidate["bounds"][0]
+                            or caption["bounds"][0] >= candidate["bounds"][2]
+                            or caption["bounds"][3] <= candidate["bounds"][1]
+                            or caption["bounds"][1] >= candidate["bounds"][3]
+                        ):
+                            neighbor_merges.append(candidate["id"])
+                candidate_text = " ".join(
+                    [str(candidate.get("captionText", ""))]
+                    + [str(item.get("text", "")) for item in candidate.get("internalText", [])]
+                ).casefold()
+                if any(token in candidate_text for token in ("graph", "그래프", "축", "axis")):
+                    if not any(token in candidate_text for token in ("kpa", "atm", "mol", "시간", "time", "pressure", "압력", "농도", "concentration")):
+                        axis_omissions.append(candidate["id"])
+                if candidate.get("decision") != "exclude" and (
+                    candidate.get("decorative") is True
+                    or str(candidate.get("kind", "")).casefold() in {"portrait", "decorativeportrait", "decorative-portrait"}
+                ):
+                    decorative_retention.append(candidate["id"])
+        blocker = None
+        if not matching:
+            blocker = "source-manifest-missing"
+        elif not matched_terms:
+            blocker = "representative-terms-not-found"
+        elif not candidate_ids:
+            blocker = "caption-complete-candidate-missing"
+        results.append(
+            {
+                "id": representative_id,
+                "sourceStems": [manifest["sourceStem"] for manifest in matching],
+                "matchedTerms": matched_terms,
+                "candidateIds": sorted(candidate_ids),
+                "fragmentationDetected": sorted(set(fragmentation)),
+                "axisOmissionsDetected": sorted(set(axis_omissions)),
+                "neighborMergesDetected": sorted(set(neighbor_merges)),
+                "decorativePortraitRetention": sorted(set(decorative_retention)),
+                "blocker": blocker,
+            }
+        )
+    return results
+
+
+def _audit_manifest(manifest: dict, expected_hash: str, expected_page_count: int, out_dir: Path) -> list[str]:
+    errors = []
+    if manifest.get("sourceSha256") != expected_hash:
+        errors.append(f"{manifest.get('sourceStem')}:manifest-source-hash")
+    pages = manifest.get("pages")
+    if not isinstance(pages, list) or len(pages) != expected_page_count:
+        return errors + [f"{manifest.get('sourceStem')}:page-count"]
+    for index, page in enumerate(pages, start=1):
+        if page.get("sourcePage") != index:
+            errors.append(f"{manifest.get('sourceStem')}:page-number:{index}")
+        if page.get("sourceSha256") != expected_hash:
+            errors.append(f"{manifest.get('sourceStem')}:page-source-hash:{index}")
+        for field in ("bounds",):
+            if not _normalized_bounds_valid(page.get(field)):
+                errors.append(f"{manifest.get('sourceStem')}:page-{field}:{index}")
+        for record in [*page.get("textBlocks", []), *page.get("visualAtoms", []), *page.get("visualCandidates", [])]:
+            if record.get("sourcePage") != index or record.get("sourceSha256") != expected_hash:
+                errors.append(f"{manifest.get('sourceStem')}:record-provenance:{record.get('id')}")
+            if not _normalized_bounds_valid(record.get("bounds")):
+                errors.append(f"{manifest.get('sourceStem')}:record-bounds:{record.get('id')}")
+        for candidate in page.get("visualCandidates", []):
+            if not candidate.get("captionId") or not _nonempty_text(candidate.get("captionText")):
+                errors.append(f"{manifest.get('sourceStem')}:candidate-caption:{candidate.get('id')}")
+            if candidate.get("reviewRequired") is not True or candidate.get("reviewStatus") != "pending":
+                errors.append(f"{manifest.get('sourceStem')}:candidate-review-gate:{candidate.get('id')}")
+            if candidate.get("decision") != "exclude":
+                if not _nonempty_text(candidate.get("supportedSection")):
+                    errors.append(f"{manifest.get('sourceStem')}:candidate-section:{candidate.get('id')}")
+                if not isinstance(candidate.get("decisionReasons"), list) or not candidate["decisionReasons"]:
+                    errors.append(f"{manifest.get('sourceStem')}:candidate-reasons:{candidate.get('id')}")
+            if candidate.get("embeddedTextStatus") == "unread" and candidate.get("decision") == "reconstruct":
+                if candidate.get("reconstructionBlocked") is not True or "label-transcription-required" not in candidate.get("blockingReasons", []):
+                    errors.append(f"{manifest.get('sourceStem')}:unread-reconstruction:{candidate.get('id')}")
+            for field in ("cropPath", "reviewPacketPath"):
+                if not isinstance(candidate.get(field), str) or Path(candidate[field]).is_absolute() or not (out_dir / candidate[field]).is_file():
+                    errors.append(f"{manifest.get('sourceStem')}:artifact:{candidate.get('id')}:{field}")
+    return errors
+
+
 def extract_all_candidates(
     index_path: Path,
     pages_root: Path,
@@ -860,7 +1089,16 @@ def extract_all_candidates(
         raise ValueError("source index must contain a list")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    crops_dir = out_dir / "crops"
+    review_dir = out_dir / "review"
+    for directory in (crops_dir, review_dir):
+        if directory.exists():
+            shutil.rmtree(directory)
+        directory.mkdir(parents=True, exist_ok=True)
     results = []
+    manifests = []
+    reviews = []
+    source_hash_map = {}
     for index, record in enumerate(records):
         if not isinstance(record, dict):
             raise ValueError(f"source index record {index} must be an object")
@@ -875,14 +1113,63 @@ def extract_all_candidates(
         if source_hash != record["sha256"]:
             raise ValueError(f"source hash mismatch for {record['sourceFile']}")
         rendered_dir = Path(pages_root) / record["sourceStem"]
-        pages = link_visual_context(extract_page_regions(pdf, rendered_dir))
+        pages = extract_page_evidence(pdf, rendered_dir)
         if len(pages) != page_count:
             raise ValueError(f"source page count mismatch for {record['sourceFile']}")
-        evidence = _source_lesson_evidence(pages)
         for page in pages:
-            page["visualCandidates"] = [
-                rank_visual_candidate(candidate, evidence) for candidate in page["visualCandidates"]
-            ]
+            page["supportedSection"] = record["sourceStem"]
+            page["context"] = {"supportedSection": record["sourceStem"]}
+        evidence = _canonical_lesson_evidence(record["sourceStem"], pages)
+        for page in pages:
+            candidates = assemble_composite_figures(page)
+            ranked_candidates = []
+            for local_candidate in candidates:
+                local_id = local_candidate["id"]
+                local_candidate["localCandidateId"] = local_id
+                local_candidate["id"] = _safe_candidate_id(record["sourceStem"], page["sourcePage"], local_id)
+                text_by_id = {
+                    block["id"]: block
+                    for block in page.get("textBlocks", [])
+                    if isinstance(block, dict) and _nonempty_text(block.get("id"))
+                }
+                local_candidate["relatedTextIds"] = [
+                    text_id
+                    for text_id in local_candidate.get("relatedTextIds", [])
+                    if text_by_id.get(text_id, {}).get("role") in {None, "body"}
+                ]
+                local_candidate["internalTextIds"] = [
+                    text_id
+                    for text_id in local_candidate.get("internalTextIds", [])
+                    if text_by_id.get(text_id, {}).get("role") == "figureInternal"
+                ]
+                linked = link_canonical_candidate_context(page, local_candidate)
+                ranked = rank_canonical_visual_candidate(linked, evidence)
+                ranked["reconstructionBlocked"] = (
+                    "label-transcription-required" in ranked.get("blockingReasons", [])
+                )
+                safe_id = ranked["id"]
+                crop_path = Path("crops") / f"{safe_id}.png"
+                review_path = Path("review") / f"{safe_id}.png"
+                rendered_page = rendered_dir / page["renderedPage"]
+                _write_candidate_crop(rendered_page, ranked["bounds"], out_dir / crop_path)
+                render_review_packet(ranked, rendered_page, out_dir / review_path)
+                ranked["cropPath"] = crop_path.as_posix()
+                ranked["reviewPacketPath"] = review_path.as_posix()
+                ranked_candidates.append(ranked)
+                reviews.append(
+                    {
+                        "candidateId": ranked["id"],
+                        "sourceStem": record["sourceStem"],
+                        "sourcePage": ranked["sourcePage"],
+                        "sourceSha256": ranked["sourceSha256"],
+                        "bounds": ranked["bounds"],
+                        "status": "pending",
+                        "checks": {name: False for name in REQUIRED_CHECKS},
+                        "transcribedLabels": [],
+                        "notes": "",
+                    }
+                )
+            page["visualCandidates"] = ranked_candidates
         manifest = {
             "sourceFile": record["sourceFile"],
             "sourceStem": record["sourceStem"],
@@ -892,12 +1179,59 @@ def extract_all_candidates(
         }
         output_path = out_dir / f"{record['sourceStem']}.json"
         output_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        manifests.append(manifest)
+        source_hash_map[record["sourceStem"]] = source_hash
         retained = sum(
-            candidate["recommendation"] != "exclude"
+            candidate["decision"] != "exclude"
             for page in pages
             for candidate in page["visualCandidates"]
         )
         results.append({"sourceFile": record["sourceFile"], "pages": len(pages), "retained": retained})
+    audit_errors = []
+    for record, manifest in zip(records, manifests):
+        audit_errors.extend(
+            _audit_manifest(manifest, record["sha256"], record["pageCount"], out_dir)
+        )
+    all_candidates = [
+        candidate
+        for manifest in manifests
+        for page in manifest["pages"]
+        for candidate in page["visualCandidates"]
+    ]
+    audit = {
+        "manifestCount": len(manifests),
+        "pageCount": sum(manifest["pageCount"] for manifest in manifests),
+        "candidateCount": len(all_candidates),
+        "retainedCandidateCount": sum(candidate["decision"] != "exclude" for candidate in all_candidates),
+        "reviewCount": len(reviews),
+        "cropCount": len(list(crops_dir.glob("*.png"))),
+        "reviewPacketCount": len(list(review_dir.glob("*.png"))),
+        "sourceHashMap": source_hash_map,
+        "invariants": {
+            "allSourceHashesValid": not any("hash" in error for error in audit_errors),
+            "allPageCountsValid": not any("page-count" in error or "page-number" in error for error in audit_errors),
+            "allBoundsNormalized": not any("bounds" in error for error in audit_errors),
+            "allProvenanceValid": not any("provenance" in error for error in audit_errors),
+            "allCandidatesCaptionComplete": not any("candidate-caption" in error for error in audit_errors),
+            "allRetainedReviewGated": not any("candidate-review-gate" in error for error in audit_errors),
+            "allCandidatesReviewRequired": not any("candidate-review-gate" in error for error in audit_errors),
+            "allRetainedDecisionReasonsPresent": not any("candidate-reasons" in error for error in audit_errors),
+            "allRetainedSupportedSectionsPresent": not any("candidate-section" in error for error in audit_errors),
+            "allUnreadReconstructionsBlocked": not any("unread-reconstruction" in error for error in audit_errors),
+            "allArtifactsPresent": not any("artifact" in error for error in audit_errors),
+            "deterministicSerialization": True,
+        },
+        "errors": audit_errors,
+        "representatives": _audit_representatives(manifests),
+    }
+    (out_dir / "reviews.json").write_text(
+        json.dumps(reviews, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (out_dir / "audit.json").write_text(
+        json.dumps(audit, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return results
 
 
