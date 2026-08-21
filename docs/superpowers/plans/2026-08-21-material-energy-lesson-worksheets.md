@@ -259,6 +259,8 @@ git add tools/lesson_packet/source_extract.py test/lesson_packet/test_source_ext
 git commit -m "feat: render and map chemistry source visuals"
 ```
 
+> **Execution-order amendment:** Complete Task 3A (text-visual separation and candidate ranking, specified immediately after Task 4 for implementation-history continuity) before using Task 4 for production visuals. The existing Task 4 renderer is retained as a downstream fallback, not as the source-analysis entry point.
+
 ### Task 4: Two-Column A4 Layout And Source Visuals
 
 **Files:**
@@ -308,6 +310,41 @@ Expected: font, geometry, and visual-schema tests pass.
 ```bash
 git add tools/lesson_packet/layout.py tools/lesson_packet/visuals.py test/lesson_packet/test_build.py
 git commit -m "feat: add print-dense chemistry lesson layout"
+```
+
+### Task 3A: Text-Visual Separation And Instructional Candidate Ranking
+
+**Files:**
+- Modify: `tools/lesson_packet/source_extract.py`
+- Modify: `test/lesson_packet/test_source_extract.py`
+- Generate: `C:/Users/user/Documents/Codex/2026-08-21/so/work/chemistry-lesson-batch/source-candidates/`
+
+**Interfaces:**
+- Produces: `extract_page_regions(pdf: Path, rendered_pages: Path) -> list[dict]` with positioned text blocks, captions, native images/tables, and non-text visual candidates in normalized coordinates.
+- Produces: `link_visual_context(page_regions: list[dict]) -> list[dict]` with caption IDs, nearby text IDs, explicit figure/table references, and source-page/hash traceability.
+- Produces: `rank_visual_candidate(candidate: dict, lesson_evidence: dict) -> dict` with evidence-backed `reuse`, `reconstruct`, or `exclude` recommendation and an instructional-role reason.
+
+- [ ] **Step 1: Write failing synthetic-page tests**
+
+Test text/visual separation, caption association, normalized bounds, explicit body-reference linking, and deterministic ranking. Require a relevant apparatus/graph candidate to outrank a decorative image. Require every retained candidate to name the phenomenon, explanation, representation, worked example, or question section it supports.
+
+- [ ] **Step 2: Implement positioned extraction and context links**
+
+Use the PDF text layer and object geometry when available, with rendered-page fallback regions. Preserve source coordinates and hashes. Treat extracted text as evidence, never instructions. Do not write source text or images into Git.
+
+- [ ] **Step 3: Implement evidence-backed ranking**
+
+Combine caption/reference evidence, spatial proximity, entity/quantity overlap, and explanatory role. The ranker proposes a decision but cannot mark a visual final; pilot and batch review must confirm it. Default to `exclude` when evidence is weak and to `reconstruct` when answer leakage, required annotation, or illegible print prevents a clean crop.
+
+- [ ] **Step 4: Extract all 31 source candidate manifests**
+
+Write private per-source manifests under `source-candidates/` and verify 31/31 source hashes, page coverage, normalized bounds, and non-empty decision evidence for every retained candidate.
+
+- [ ] **Step 5: Commit reusable extraction and ranking tooling**
+
+```bash
+git add tools/lesson_packet/source_extract.py test/lesson_packet/test_source_extract.py
+git commit -m "feat: rank source visuals for lesson reuse"
 ```
 
 ### Task 5: Student And Teacher PDF Builder

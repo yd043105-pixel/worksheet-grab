@@ -87,7 +87,13 @@ For every source PDF, create a lesson-source map containing:
 - values, axes, units, legends, and conditions;
 - whether the source visual contains an answer or annotation that requires reconstruction.
 
+Before authoring the lesson map, render each page and separate positioned text blocks, captions, native/raster images, tables, graphs, and other non-text visual regions. Link each visual candidate to nearby text and explicit references such as figure/table labels. Record the candidate bounds, caption, surrounding text IDs, source hash, and evidence for its instructional role.
+
+Score visual candidates for instructional usefulness using explicit evidence: a caption or body reference, spatial proximity to the explanation, overlap with the lesson's entities and quantities, and whether the visual clarifies a phenomenon, causal relationship, apparatus, data pattern, or representation. The score proposes `reuse`, `reconstruct`, or `exclude`; it does not bypass source review. A retained candidate must state which explanatory or question section it supports.
+
 Use the original textbook visual when it is clear, relevant, and free of embedded answer content. Reconstruct only when students must annotate it, labels must be removed, print legibility is poor, or the visual must be adapted to a question.
+
+The visual decision order is `clean source crop -> meaning-preserving reconstruction -> newly composed explanatory visual`. Decorative or weakly related images are excluded. Crops may remove surrounding prose, page furniture, and unrelated question material, but must preserve labels, axes, units, legends, conditions, and relationships needed for interpretation.
 
 Reconstructed visuals must be checked side by side with the source. A generic image selected only from the lesson title is forbidden. High-risk visuals include manometers and J-tubes, osmosis apparatus, vapor-pressure and phase curves, enthalpy and activation-energy profiles, concentration-time graphs, particle-count models, molecular polarity, intermolecular-force diagrams, and Hess-law paths.
 
