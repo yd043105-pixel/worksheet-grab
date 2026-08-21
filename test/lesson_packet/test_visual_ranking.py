@@ -159,6 +159,15 @@ class VisualRankingTests(unittest.TestCase):
         self.assertIn("label-transcription-required", result["blockingReasons"])
         self.assertEqual(result["reviewStatus"], "pending")
 
+    def test_omitted_embedded_text_status_remains_valid(self):
+        candidate = relevant_graph_candidate()
+        candidate.pop("embeddedTextStatus")
+
+        result = rank_visual_candidate(candidate, lesson_evidence())
+
+        self.assertEqual(result["decision"], "reuse")
+        self.assertEqual(result["blockingReasons"], [])
+
     def test_answer_leakage_annotation_poor_print_and_incomplete_crop_require_reconstruction(self):
         hazards = (
             ("answerLeakage", "answer-leakage"),
@@ -274,6 +283,7 @@ class VisualRankingTests(unittest.TestCase):
         malformed = (
             ("unknown-hazard", relevant_graph_candidate(hazards={"unknownHazard": True}), "hazard"),
             ("boolean-status", relevant_graph_candidate(embeddedTextStatus=True), "embeddedTextStatus"),
+            ("null-status", relevant_graph_candidate(embeddedTextStatus=None), "embeddedTextStatus"),
             ("unsupported-status", relevant_graph_candidate(embeddedTextStatus="mystery"), "embeddedTextStatus"),
         )
         for name, candidate, message in malformed:
@@ -283,6 +293,31 @@ class VisualRankingTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message) as second:
                     rank_visual_candidate(candidate, lesson_evidence())
                 self.assertEqual(str(first.exception), str(second.exception))
+
+    def test_page_text_and_candidate_source_hashes_require_canonical_sha256(self):
+        malformed_hashes = ("not-a-sha256", "a" * 63, "A" * 64, "g" * 64)
+        for malformed_hash in malformed_hashes:
+            with self.subTest(scope="page", hash=malformed_hash):
+                page = copy.deepcopy(_page())
+                page["sourceSha256"] = malformed_hash
+                for block in page["textBlocks"]:
+                    block["sourceSha256"] = malformed_hash
+                with self.assertRaisesRegex(ValueError, "sourceSha256") as first:
+                    link_candidate_context(page, relevant_graph_candidate())
+                with self.assertRaisesRegex(ValueError, "sourceSha256") as second:
+                    link_candidate_context(page, relevant_graph_candidate())
+                self.assertEqual(str(first.exception), str(second.exception))
+
+            with self.subTest(scope="text", hash=malformed_hash):
+                page = copy.deepcopy(_page())
+                page["textBlocks"][0]["sourceSha256"] = malformed_hash
+                with self.assertRaisesRegex(ValueError, "sourceSha256"):
+                    link_candidate_context(page, relevant_graph_candidate())
+
+            with self.subTest(scope="candidate", hash=malformed_hash):
+                candidate = relevant_graph_candidate(sourceSha256=malformed_hash)
+                with self.assertRaisesRegex(ValueError, "sourceSha256"):
+                    rank_visual_candidate(candidate, lesson_evidence())
 
 
 if __name__ == "__main__":

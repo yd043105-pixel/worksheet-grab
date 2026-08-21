@@ -11,6 +11,7 @@ from collections.abc import Iterable
 
 
 _TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REFERENCE_RE = re.compile(
     r"(?:그림|표|그래프|Figure|Fig\.?|Table)\s*"
     r"(?:[IVXLCDMⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+\s*)?[-－–—]?\s*\d+(?:[.-]\d+)?",
@@ -63,8 +64,8 @@ def _source_trace(record: dict, label: str, required: bool = True) -> tuple[int 
         return None, None
     if isinstance(source_page, bool) or not isinstance(source_page, int) or source_page < 1:
         raise ValueError(f"{label} sourcePage must be one-based")
-    if not _nonempty_text(source_hash):
-        raise ValueError(f"{label} sourceSha256 is required")
+    if not isinstance(source_hash, str) or not _SHA256_RE.fullmatch(source_hash):
+        raise ValueError(f"{label} sourceSha256 must be lowercase 64-hex SHA-256")
     return source_page, source_hash
 
 
@@ -373,11 +374,12 @@ def _active_hazards(candidate: dict) -> list[str]:
         if value:
             active.append(reason)
 
-    embedded_status = candidate.get("embeddedTextStatus")
-    if embedded_status is not None and (
-        not isinstance(embedded_status, str) or embedded_status not in _EMBEDDED_TEXT_STATUSES
-    ):
-        raise ValueError("visual candidate embeddedTextStatus must be known, unread, or none")
+    if "embeddedTextStatus" in candidate:
+        embedded_status = candidate["embeddedTextStatus"]
+        if not isinstance(embedded_status, str) or embedded_status not in _EMBEDDED_TEXT_STATUSES:
+            raise ValueError("visual candidate embeddedTextStatus must be known, unread, or none")
+    else:
+        embedded_status = None
     label_status = candidate.get("labelStatus", candidate.get("pixelTextStatus", ""))
     if not isinstance(label_status, str):
         raise ValueError("visual candidate label status must be text")
