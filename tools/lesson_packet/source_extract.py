@@ -932,6 +932,21 @@ def _normalized_bounds_valid(value: object) -> bool:
     return 0 <= value[0] < value[2] <= 1 and 0 <= value[1] < value[3] <= 1
 
 
+def _candidate_evidence_text(candidate: dict) -> list[str]:
+    evidence = []
+    for field in ("captionText", "relatedText", "internalText", "explicitReferences"):
+        value = candidate.get(field)
+        values = value if isinstance(value, (list, tuple)) else [value]
+        for item in values:
+            if isinstance(item, str):
+                evidence.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text", item.get("matchText"))
+                if isinstance(text, str):
+                    evidence.append(text)
+    return evidence
+
+
 def _audit_representatives(manifests: list[dict]) -> list[dict]:
     specifications = (
         ("gas-pressure-boyle-j-tube", ("1-1-1.",), ("boyle", "보일", "j자", "j tube", "j-")),
@@ -964,7 +979,11 @@ def _audit_representatives(manifests: list[dict]) -> list[dict]:
         candidate_ids = [
             candidate["id"]
             for candidate in candidates
-            if any(term.casefold() in str(candidate.get("captionText", "")).casefold() for term in terms)
+            if any(
+                term.casefold() in evidence.casefold()
+                for term in terms
+                for evidence in _candidate_evidence_text(candidate)
+            )
         ]
         fragmentation = []
         neighbor_merges = []

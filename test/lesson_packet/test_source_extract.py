@@ -240,10 +240,19 @@ class SourceRegionTests(unittest.TestCase):
             "id": "rate-graph",
             "captionText": "의 몰농도 | 그림 - 2 |",
             "relatedText": [{"text": "반응 속도는 시간에 따라 감소한다."}],
-            "internalText": [{"text": "농도 (M) 시간 (s)"}],
+            "internalText": [{"text": "농도 그래프 (M) 시간 (s)"}],
+            "explicitReferences": ["reaction rate reference"],
             "decision": "reuse",
             "bounds": [0.2, 0.2, 0.8, 0.7],
             "visualAtomIds": [],
+        }
+        unrelated_candidate = {
+            **candidate,
+            "id": "unrelated-figure",
+            "captionText": "일반적인 삽화",
+            "relatedText": [],
+            "internalText": [],
+            "explicitReferences": [],
         }
         manifest = {
             "sourceStem": "4-1-1. 화학 반응 속도(2차시 분량)",
@@ -252,9 +261,13 @@ class SourceRegionTests(unittest.TestCase):
                     "role": "caption",
                     "text": "의 몰농도 | 그림 - 2 |",
                     "bounds": [0.2, 0.75, 0.8, 0.8],
+                }, {
+                    "role": "body",
+                    "text": "반응 속도는 이 페이지의 다른 설명에만 있다.",
+                    "bounds": [0.05, 0.05, 0.95, 0.1],
                 }],
                 "visualAtoms": [],
-                "visualCandidates": [candidate],
+                "visualCandidates": [candidate, unrelated_candidate],
             }],
         }
 
