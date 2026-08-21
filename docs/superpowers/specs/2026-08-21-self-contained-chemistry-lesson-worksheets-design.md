@@ -151,6 +151,10 @@ The ranker produces evidence, not final authority. Evidence may include explicit
 
 Every retained candidate is visually reviewed against its full source page. High-risk candidates—manometers/J-tubes, osmosis, phase or vapor-pressure curves, energy profiles, rate graphs, particle/molecular diagrams, and Hess paths—require side-by-side review. Review checks the full composite, internal labels, directions, levels, signs, axes, units, conditions, and source trace. No candidate is final merely because its numeric score is high.
 
+### Production Precondition
+
+Task 5 builder and Task 6 pilot/batch content may consume only source candidates with `reviewStatus: approved`; reconstruction additionally requires a verified semantic schema and no blocking reasons. `reviewRequired` remains `true` until approval. Unread raster labels require verified transcription before reconstruction, and any unresolved representative-audit blocker prevents pilot or batch production.
+
 ## Reconstruction Boundary
 
 The generic scene renderer is a fallback consumer of an approved candidate, not the source-analysis entry point. A reconstruction scene is compiled from candidate entities/relationships/invariants and may use only validated generic primitives: paths, lines, containers, markers, labels, arrows, axes, dimensions, groups, and repeats with bounded transforms. Domain conveniences such as a J-tube adapter must compile to the same scene contract and cannot accept free-form equations or title-derived semantics.

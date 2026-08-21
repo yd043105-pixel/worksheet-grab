@@ -347,6 +347,10 @@ git add tools/lesson_packet/source_extract.py test/lesson_packet/test_source_ext
 git commit -m "feat: rank source visuals for lesson reuse"
 ```
 
+### Production Precondition For Worksheet Visuals
+
+Task 5 builder and Task 6 pilot/batch content may consume only source candidates with `reviewStatus: approved`; reconstruction additionally requires a verified semantic schema and no blocking reasons. `reviewRequired` remains `true` until approval. Unread raster labels require verified transcription before reconstruction, and any unresolved representative-audit blocker prevents pilot or batch production.
+
 ### Task 5: Student And Teacher PDF Builder
 
 **Files:**
@@ -354,7 +358,7 @@ git commit -m "feat: rank source visuals for lesson reuse"
 - Modify: `test/lesson_packet/test_build.py`
 
 **Interfaces:**
-- Consumes: validated lesson JSON and rendered source pages.
+- Consumes: validated lesson JSON, rendered source pages, and approved source-candidate manifests and review records.
 - Produces: `build_variants(lesson: Lesson, assets_root: Path, out_root: Path) -> tuple[Path, Path]`.
 - Produces same page count and matching page section IDs for student and teacher variants.
 
@@ -417,7 +421,7 @@ git commit -m "feat: build paired chemistry lesson PDFs"
 - Generate: matching pilot PDFs under `.../staging/{학생용,교사용}/`.
 
 **Interfaces:**
-- Consumes: source PDFs, page renders, curriculum codes `[12물에01-01]`, `[12물에02-03]`, and `[12물에04-04]` from `data/achievement-standards.csv`.
+- Consumes: source PDFs, page renders, approved source-candidate manifests and review records, curriculum codes `[12물에01-01]`, `[12물에02-03]`, and `[12물에04-04]` from `data/achievement-standards.csv`.
 - Produces: three validated lesson JSON records spanning apparatus, transport/particle explanation, graph/calculation, and catalyst energy-profile risks.
 
 - [ ] **Step 1: Build source maps for every pilot visual**
