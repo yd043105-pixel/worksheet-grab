@@ -1,20 +1,177 @@
 import copy
+import hashlib
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image, ImageDraw
 from pypdf import PdfWriter
+from reportlab.pdfgen import canvas
 
 from tools.lesson_packet.source_extract import (
+    extract_page_evidence,
+    extract_page_regions,
     inventory_sources,
+    link_visual_context,
     parse_lesson_count,
+    rank_visual_candidate,
     render_all_sources,
     render_source_pages,
     validate_visual_map,
 )
 from tools.lesson_packet.visuals import reconstructed_visual_flowable
 from fixtures import valid_lesson_dict
+
+
+def _write_region_fixture(root: Path) -> tuple[Path, Path]:
+    image_path = root / "apparatus.png"
+    image = Image.new("RGB", (80, 60), "white")
+    drawing = ImageDraw.Draw(image)
+    drawing.rectangle((8, 8, 72, 52), outline="black", width=3)
+    drawing.line((40, 8, 40, 52), fill="black", width=2)
+    image.save(image_path)
+
+    pdf_path = root / "regions.pdf"
+    document = canvas.Canvas(str(pdf_path), pagesize=(400, 400), pageCompression=0)
+    document.setFont("Helvetica", 11)
+    document.drawString(30, 365, "Figure 1 shows the gas pressure apparatus.")
+    document.drawString(30, 345, "Ordinary body glyphs remain positioned text evidence.")
+    document.drawImage(str(image_path), 45, 225, width=80, height=60)
+    document.setFont("Helvetica", 9)
+    document.drawString(45, 210, "Figure 1. Gas pressure apparatus")
+
+    for x in (250, 300, 350):
+        document.line(x, 225, x, 285)
+    for y in (225, 255, 285):
+        document.line(250, y, 350, y)
+    document.setFont("Helvetica", 8)
+    document.drawString(257, 263, "time")
+    document.drawString(305, 263, "rate")
+    document.drawString(257, 233, "1")
+    document.drawString(305, 233, "2")
+    document.drawString(250, 210, "Table 1. Reaction rate data")
+
+    document.line(45, 75, 45, 160)
+    document.line(45, 75, 145, 75)
+    document.line(50, 85, 85, 115)
+    document.line(85, 115, 140, 145)
+    document.setFont("Helvetica", 9)
+    document.drawString(45, 58, "Figure 2. Concentration-time graph")
+    document.showPage()
+    document.save()
+
+    rendered = root / "pages"
+    render_source_pages(pdf_path, rendered, dpi=72)
+    return pdf_path, rendered
+
+
+def _relevant_candidate() -> dict:
+    return {
+        "id": "page-001-image-001",
+        "kind": "nativeImage",
+        "sourcePage": 1,
+        "sourceSha256": "a" * 64,
+        "bounds": [0.1, 0.2, 0.5, 0.6],
+        "captionText": "Figure 1. Gas pressure apparatus and pressure difference",
+        "explicitReferences": ["Figure 1 shows the gas pressure apparatus."],
+        "nearbyText": [
+            {"text": "Compare gas pressure with atmospheric pressure.", "distance": 0.03}
+        ],
+    }
+
+
+def _lesson_evidence() -> dict:
+    return {
+        "title": "A title is metadata, not ranking evidence",
+        "sections": {
+            "representation": {
+                "text": "The gas pressure apparatus represents pressure difference.",
+                "entities": ["gas", "apparatus"],
+                "quantities": ["pressure", "pressure difference"],
+            },
+            "question": {
+                "text": "How does gas pressure compare with atmospheric pressure?",
+                "entities": ["gas"],
+                "quantities": ["pressure"],
+            },
+        },
+    }
+
+
+def _composite_page_fixture() -> dict:
+    source_hash = "c" * 64
+
+    def region(region_id: str, bounds: list[float], **extra) -> dict:
+        return {
+            "id": region_id,
+            "sourcePage": 1,
+            "sourceSha256": source_hash,
+            "bounds": bounds,
+            **extra,
+        }
+
+    return {
+        "id": "page-001",
+        "sourcePage": 1,
+        "sourceSha256": source_hash,
+        "pageWidth": 400.0,
+        "pageHeight": 600.0,
+        "bounds": [0.0, 0.0, 1.0, 1.0],
+        "renderedPage": "page-001.png",
+        "textBlocks": [
+            region(
+                "page-001-text-001",
+                [0.1, 0.08, 0.72, 0.12],
+                text="Figure 1 shows the gas pressure apparatus and graph.",
+                sourceText="Figure 1 shows the gas pressure apparatus and graph.",
+            ),
+            region(
+                "page-001-text-002",
+                [0.52, 0.49, 0.74, 0.53],
+                text="pressure (atm)",
+                sourceText="pressure (atm)",
+            ),
+            region(
+                "page-001-text-003",
+                [0.1, 0.61, 0.8, 0.66],
+                text="A separate explanation divides the neighboring figures on this page.",
+                sourceText="A separate explanation divides the neighboring figures on this page.",
+            ),
+            region(
+                "page-001-text-004",
+                [0.1, 0.67, 0.5, 0.69],
+                text="Figure 2 shows a separate energy profile.",
+                sourceText="Figure 2 shows a separate energy profile.",
+            ),
+        ],
+        "captionBlocks": [
+            region(
+                "page-001-caption-001",
+                [0.1, 0.55, 0.76, 0.59],
+                text="Figure 1. J-tube apparatus and Boyle graph",
+                sourceText="Figure 1. J-tube apparatus and Boyle graph",
+                label="Figure 1",
+            ),
+            region(
+                "page-001-caption-002",
+                [0.1, 0.84, 0.45, 0.88],
+                text="Figure 2. Separate energy profile",
+                sourceText="Figure 2. Separate energy profile",
+                label="Figure 2",
+            ),
+        ],
+        "visualCandidates": [
+            region("page-001-native-image-001", [0.82, 0.05, 0.96, 0.22], kind="nativeImage", objectCount=1),
+            region("page-001-vector-group-001", [0.1, 0.28, 0.25, 0.5], kind="vectorGroup", objectCount=4),
+            region("page-001-vector-group-002", [0.27, 0.37, 0.34, 0.43], kind="vectorGroup", objectCount=2),
+            region("page-001-vector-group-003", [0.36, 0.28, 0.49, 0.5], kind="vectorGroup", objectCount=4),
+            region("page-001-vector-group-004", [0.52, 0.22, 0.75, 0.5], kind="vectorGroup", objectCount=6),
+            region("page-001-vector-group-005", [0.1, 0.71, 0.38, 0.81], kind="vectorGroup", objectCount=5),
+        ],
+    }
 
 
 class SourceExtractTests(unittest.TestCase):
@@ -74,6 +231,368 @@ class SourceExtractTests(unittest.TestCase):
             results = render_all_sources(index, root / "pages", root)
 
             self.assertEqual(results, [{"sourceFile": source.name, "renderedPages": 1}])
+
+
+class SourceRegionTests(unittest.TestCase):
+    def test_canonical_page_evidence_is_available_from_the_compatibility_surface(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pdf, rendered = _write_region_fixture(Path(directory))
+
+            page = extract_page_evidence(pdf, rendered)[0]
+
+            self.assertEqual(page["sourcePage"], 1)
+            self.assertEqual(page["renderedPage"], "page-001.png")
+            self.assertIn("visualAtoms", page)
+
+    def test_extract_regions_uses_one_based_ids_normalized_bounds_and_source_traceability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdf, rendered = _write_region_fixture(root)
+
+            pages = extract_page_regions(pdf, rendered)
+
+            self.assertEqual(len(pages), 1)
+            page = pages[0]
+            self.assertEqual(page["sourcePage"], 1)
+            self.assertEqual(page["id"], "page-001")
+            self.assertEqual(page["pageWidth"], 400.0)
+            self.assertEqual(page["pageHeight"], 400.0)
+            self.assertEqual(page["bounds"], [0.0, 0.0, 1.0, 1.0])
+            self.assertEqual(page["sourceSha256"], hashlib.sha256(pdf.read_bytes()).hexdigest())
+            self.assertEqual(page["renderedPage"], "page-001.png")
+            regions = page["textBlocks"] + page["captionBlocks"] + page["visualCandidates"]
+            self.assertTrue(regions)
+            for region in regions:
+                left, top, right, bottom = region["bounds"]
+                self.assertTrue(0 <= left < right <= 1, region)
+                self.assertTrue(0 <= top < bottom <= 1, region)
+                self.assertRegex(region["id"], r"^page-001-[a-z-]+-\d{3}$")
+                self.assertEqual(region["sourcePage"], 1)
+                self.assertEqual(region["sourceSha256"], page["sourceSha256"])
+
+    def test_extract_regions_separates_positioned_text_and_captions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pdf, rendered = _write_region_fixture(Path(directory))
+
+            page = extract_page_regions(pdf, rendered)[0]
+
+            body_text = " ".join(block["text"] for block in page["textBlocks"])
+            captions = [block["text"] for block in page["captionBlocks"]]
+            self.assertIn("Ordinary body glyphs", body_text)
+            self.assertNotIn("Figure 1. Gas pressure apparatus", body_text)
+            self.assertIn("Figure 1. Gas pressure apparatus", captions)
+            self.assertIn("Table 1. Reaction rate data", captions)
+            self.assertIn("Figure 2. Concentration-time graph", captions)
+            for block in page["textBlocks"] + page["captionBlocks"]:
+                self.assertIn("sourceText", block)
+                self.assertNotIn("instruction", block)
+
+    def test_extract_regions_finds_native_image_table_and_connected_vector_group_not_glyphs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pdf, rendered = _write_region_fixture(Path(directory))
+
+            candidates = extract_page_regions(pdf, rendered)[0]["visualCandidates"]
+
+            kinds = [candidate["kind"] for candidate in candidates]
+            self.assertIn("nativeImage", kinds)
+            self.assertIn("table", kinds)
+            self.assertIn("vectorGroup", kinds)
+            self.assertNotIn("glyph", kinds)
+            self.assertNotIn("text", kinds)
+            self.assertLessEqual(kinds.count("vectorGroup"), 2)
+
+    def test_extract_regions_uses_rendered_page_as_fallback_without_ocr_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdf = root / "blank.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=100, height=200)
+            with pdf.open("wb") as stream:
+                writer.write(stream)
+            rendered = root / "pages"
+            render_source_pages(pdf, rendered, dpi=72)
+
+            page = extract_page_regions(pdf, rendered)[0]
+
+            self.assertEqual(page["textBlocks"], [])
+            self.assertEqual(page["captionBlocks"], [])
+            self.assertEqual(
+                [(item["kind"], item["bounds"]) for item in page["visualCandidates"]],
+                [("renderedFallback", [0.0, 0.0, 1.0, 1.0])],
+            )
+
+    def test_extract_regions_excludes_fully_off_page_text_furniture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdf = root / "off-page-header.pdf"
+            document = canvas.Canvas(str(pdf), pagesize=(100, 200), pageCompression=0)
+            document.setFont("Helvetica", 10)
+            document.drawString(10, 210, "Off-page running header")
+            document.drawString(10, 100, "Visible explanation")
+            document.showPage()
+            document.save()
+            rendered = root / "pages"
+            render_source_pages(pdf, rendered, dpi=72)
+
+            page = extract_page_regions(pdf, rendered)[0]
+
+            self.assertEqual([block["text"] for block in page["textBlocks"]], ["Visible explanation"])
+
+    def test_extract_regions_excludes_fully_off_page_native_images(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = root / "mark.png"
+            Image.new("RGB", (20, 20), "black").save(image_path)
+            pdf = root / "off-page-image.pdf"
+            document = canvas.Canvas(str(pdf), pagesize=(100, 200), pageCompression=0)
+            document.drawImage(str(image_path), 110, 100, width=20, height=20)
+            document.showPage()
+            document.save()
+            rendered = root / "pages"
+            render_source_pages(pdf, rendered, dpi=72)
+
+            page = extract_page_regions(pdf, rendered)[0]
+
+            self.assertEqual(
+                [candidate["kind"] for candidate in page["visualCandidates"]],
+                ["renderedFallback"],
+            )
+
+    def test_link_visual_context_associates_explicit_labels_proximity_and_body_references(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pdf, rendered = _write_region_fixture(Path(directory))
+
+            page = link_visual_context(extract_page_regions(pdf, rendered))[0]
+
+            image = next(item for item in page["visualCandidates"] if item["kind"] == "nativeImage")
+            table = next(item for item in page["visualCandidates"] if item["kind"] == "table")
+            graph = min(
+                (item for item in page["visualCandidates"] if item["kind"] == "vectorGroup"),
+                key=lambda item: item["bounds"][1],
+            )
+            self.assertTrue(image["captionId"])
+            self.assertTrue(image["bodyReferenceIds"])
+            self.assertIn("Figure 1", image["captionText"])
+            self.assertIn("Table 1", table["captionText"])
+            self.assertIn("Figure 2", graph["captionText"])
+            self.assertGreater(image["contextScoreBreakdown"]["explicitLabel"], 0)
+            self.assertGreater(image["contextScoreBreakdown"]["proximity"], 0)
+            self.assertGreater(image["contextScoreBreakdown"]["bodyReference"], 0)
+
+    def test_delimited_caption_label_after_title_links_roman_number_body_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pdf = root / "delimited-caption.pdf"
+            document = canvas.Canvas(str(pdf), pagesize=(200, 240), pageCompression=0)
+            document.setFont("Helvetica", 10)
+            document.drawString(20, 210, "Figure IV-7 shows activation energy.")
+            document.line(30, 80, 30, 170)
+            document.line(30, 80, 170, 80)
+            document.line(35, 90, 90, 150)
+            document.line(90, 150, 165, 95)
+            document.drawString(20, 60, "Enthalpy | Figure IV-7 | Reaction progress")
+            document.showPage()
+            document.save()
+            rendered = root / "pages"
+            render_source_pages(pdf, rendered, dpi=72)
+
+            page = link_visual_context(extract_page_regions(pdf, rendered))[0]
+
+            self.assertEqual([block["text"] for block in page["captionBlocks"]], ["Enthalpy | Figure IV-7 | Reaction progress"])
+            graph = next(candidate for candidate in page["visualCandidates"] if candidate["kind"] == "vectorGroup")
+            self.assertEqual(graph["captionId"], "page-001-caption-001")
+            self.assertEqual(graph["bodyReferenceIds"], ["page-001-text-001"])
+
+    def test_context_linking_canonicalizes_korean_label_when_caption_omits_unit_roman(self):
+        page = {
+            "id": "page-002",
+            "sourcePage": 2,
+            "sourceSha256": "b" * 64,
+            "pageWidth": 100.0,
+            "pageHeight": 100.0,
+            "bounds": [0.0, 0.0, 1.0, 1.0],
+            "renderedPage": "page-002.png",
+            "textBlocks": [{
+                "id": "page-002-text-001",
+                "sourcePage": 2,
+                "sourceSha256": "b" * 64,
+                "bounds": [0.1, 0.1, 0.9, 0.2],
+                "text": "그림Ⅳ-7에서 정반응의 활성화 에너지를 읽는다.",
+                "sourceText": "그림Ⅳ-7에서 정반응의 활성화 에너지를 읽는다.",
+            }],
+            "captionBlocks": [{
+                "id": "page-002-caption-001",
+                "sourcePage": 2,
+                "sourceSha256": "b" * 64,
+                "bounds": [0.1, 0.75, 0.8, 0.8],
+                "text": "엔탈피 | 그림 - 7 | 반응의 진행에 따른",
+                "sourceText": "엔탈피 | 그림 - 7 | 반응의 진행에 따른",
+            }],
+            "visualCandidates": [{
+                "id": "page-002-vector-group-001",
+                "kind": "vectorGroup",
+                "sourcePage": 2,
+                "sourceSha256": "b" * 64,
+                "bounds": [0.1, 0.25, 0.8, 0.7],
+                "objectCount": 4,
+            }],
+        }
+
+        candidate = link_visual_context([page])[0]["visualCandidates"][0]
+
+        self.assertEqual(candidate["captionId"], "page-002-caption-001")
+        self.assertEqual(candidate["bodyReferenceIds"], ["page-002-text-001"])
+
+    def test_region_extraction_and_context_linking_are_deterministic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pdf, rendered = _write_region_fixture(Path(directory))
+
+            first = link_visual_context(extract_page_regions(pdf, rendered))
+            second = link_visual_context(extract_page_regions(pdf, rendered))
+
+            self.assertEqual(first, second)
+            for page in first:
+                for key in ("textBlocks", "captionBlocks", "visualCandidates"):
+                    ids = [item["id"] for item in page[key]]
+                    self.assertEqual(ids, sorted(ids))
+
+    def test_candidates_all_cli_writes_a_deterministic_source_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_root = root / "sources"
+            source_root.mkdir()
+            pdf, fixture_pages = _write_region_fixture(source_root)
+            pdf = pdf.rename(source_root / "fixture(1차시 분량).pdf")
+            pages_root = root / "pages"
+            pages_root.mkdir()
+            fixture_pages.rename(pages_root / pdf.stem)
+            source_hash = hashlib.sha256(pdf.read_bytes()).hexdigest()
+            index = root / "source-index.json"
+            index.write_text(
+                json.dumps(
+                    [{
+                        "sourceFile": pdf.name,
+                        "sourceStem": pdf.stem,
+                        "lessonCount": 1,
+                        "pageCount": 1,
+                        "sha256": source_hash,
+                    }],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            output = root / "candidates"
+            command = [
+                sys.executable,
+                "tools/lesson_packet/source_extract.py",
+                "candidates-all",
+                "--index", str(index),
+                "--pages", str(pages_root),
+                "--out", str(output),
+                "--source-root", str(source_root),
+            ]
+
+            first = subprocess.run(command, check=False, capture_output=True, text=True)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            manifest_path = output / f"{pdf.stem}.json"
+            manifest_bytes = manifest_path.read_bytes()
+            manifest = json.loads(manifest_bytes)
+            self.assertEqual(manifest["sourceSha256"], source_hash)
+            self.assertEqual(manifest["pageCount"], 1)
+            self.assertEqual(len(manifest["pages"]), 1)
+            second = subprocess.run(command, check=False, capture_output=True, text=True)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(manifest_bytes, manifest_path.read_bytes())
+
+
+class VisualCandidateRankingTests(unittest.TestCase):
+    def test_relevant_apparatus_candidate_outranks_decorative_candidate_with_explained_scores(self):
+        relevant = rank_visual_candidate(_relevant_candidate(), _lesson_evidence())
+        decorative = rank_visual_candidate(
+            {
+                **_relevant_candidate(),
+                "id": "page-001-image-002",
+                "captionText": "Decorative school mascot",
+                "explicitReferences": [],
+                "nearbyText": [{"text": "Welcome", "distance": 0.03}],
+            },
+            _lesson_evidence(),
+        )
+
+        self.assertGreater(relevant["score"], decorative["score"])
+        self.assertEqual(
+            set(relevant["scoreBreakdown"]),
+            {"captionReference", "spatialProximity", "termOverlap", "instructionalRole"},
+        )
+        self.assertEqual(sum(relevant["scoreBreakdown"].values()), relevant["score"])
+
+    def test_retained_candidate_names_supported_section_reasons_and_review_requirement(self):
+        ranked = rank_visual_candidate(_relevant_candidate(), _lesson_evidence())
+
+        self.assertIn(ranked["recommendation"], {"reuse", "reconstruct"})
+        self.assertIn(
+            ranked["supportedSection"],
+            {"phenomenon", "explanation", "representation", "workedExample", "question"},
+        )
+        self.assertTrue(ranked["decisionReasons"])
+        self.assertTrue(ranked["reviewRequired"])
+        self.assertEqual(ranked["sourcePage"], 1)
+        self.assertEqual(ranked["sourceSha256"], "a" * 64)
+        self.assertEqual(ranked["cropBounds"], [0.1, 0.2, 0.5, 0.6])
+
+    def test_weak_evidence_and_title_only_overlap_default_to_exclude(self):
+        weak = {
+            **_relevant_candidate(),
+            "captionText": "Decorative border",
+            "explicitReferences": [],
+            "nearbyText": [],
+        }
+        title_only = {"title": "Decorative border", "sections": {"explanation": "unrelated"}}
+
+        ranked = rank_visual_candidate(weak, title_only)
+
+        self.assertEqual(ranked["recommendation"], "exclude")
+        self.assertIsNone(ranked["supportedSection"])
+        self.assertTrue(ranked["decisionReasons"])
+        self.assertTrue(ranked["reviewRequired"])
+
+    def test_relevance_hazards_change_reuse_to_reconstruct(self):
+        for hazard in (
+            "answerLeakage",
+            "requiredAnnotation",
+            "poorPrintLegibility",
+            "cropLosesMeaning",
+        ):
+            with self.subTest(hazard=hazard):
+                candidate = _relevant_candidate()
+                candidate["hazards"] = {hazard: True}
+
+                ranked = rank_visual_candidate(candidate, _lesson_evidence())
+
+                self.assertEqual(ranked["recommendation"], "reconstruct")
+                self.assertTrue(any(hazard in reason for reason in ranked["decisionReasons"]))
+                self.assertTrue(ranked["reviewRequired"])
+
+    def test_clear_relevant_candidate_without_hazard_recommends_reuse(self):
+        ranked = rank_visual_candidate(_relevant_candidate(), _lesson_evidence())
+
+        self.assertEqual(ranked["recommendation"], "reuse")
+        self.assertTrue(ranked["reviewRequired"])
+
+    def test_malformed_inputs_raise_deterministic_value_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            malformed_calls = (
+                lambda: extract_page_regions(root / "missing.pdf", root),
+                lambda: link_visual_context([None]),
+                lambda: rank_visual_candidate([], {}),
+                lambda: rank_visual_candidate(_relevant_candidate(), {"sections": []}),
+            )
+            for call in malformed_calls:
+                with self.subTest(call=call):
+                    with self.assertRaises(ValueError) as error:
+                        call()
+                    self.assertTrue(str(error.exception))
 
 
 class VisualMapTests(unittest.TestCase):
