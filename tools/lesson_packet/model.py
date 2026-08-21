@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tools.lesson_packet.source_extract import validate_visual_map
+
 
 CAUSAL_KEYS = ("phenomenon", "change", "cause", "representation", "application")
 
@@ -86,14 +88,16 @@ def validate_lesson_dict(data: dict) -> list[str]:
         return ["lesson-invalid"]
 
     errors: list[str] = []
-    visual_ids = {
-        visual.get("id")
-        for visual in _items(data.get("visuals"))
-        if isinstance(visual, dict)
-        and _is_present(visual.get("id"))
-        and isinstance(visual.get("sourcePage"), int)
-        and visual["sourcePage"] > 0
-    }
+    visual_ids: set[str] = set()
+    for visual in _items(data.get("visuals")):
+        if not isinstance(visual, dict):
+            errors.append("visual-invalid")
+            continue
+        visual_errors = validate_visual_map(visual)
+        visual_id = visual.get("id")
+        errors.extend(f"visual:{visual_id if _is_present(visual_id) else 'unknown'}:{error}" for error in visual_errors)
+        if not visual_errors and _is_present(visual_id) and isinstance(visual.get("sourcePage"), int) and visual["sourcePage"] > 0:
+            visual_ids.add(visual_id)
     periods = _items(data.get("periods"))
     if not periods:
         return ["periods-empty"]

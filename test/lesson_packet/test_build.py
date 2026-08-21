@@ -6,6 +6,7 @@ from pathlib import Path
 from PIL import Image as PillowImage
 from pypdf import PdfReader
 from reportlab.graphics import renderPDF
+from reportlab.graphics.shapes import Ellipse, Line
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate
@@ -147,8 +148,223 @@ class VisualFlowableTests(unittest.TestCase):
             "kind": "group", "semanticId": "path", "transform": {"translate": [0.5, 0.0]},
             "primitives": [{"kind": "line", "x1": 0.70, "y1": 0.30, "x2": 0.80, "y2": 0.40}],
         }
-        with self.assertRaisesRegex(ValueError, "normalized canvas"):
+        with self.assertRaisesRegex(ValueError, "canvas"):
             reconstructed_visual_flowable(transformed_outside_canvas)
+
+    def test_visible_bounds_include_strokes_arrowheads_labels_markers_and_repeats(self):
+        cases = {}
+
+        thick_line = self._phase_curve_visual()
+        thick_line["schema"]["scene"]["primitives"][2] = {
+            "kind": "line", "semanticId": "path", "x1": 0.003, "y1": 0.30,
+            "x2": 0.40, "y2": 0.30, "style": {"strokeWidth": 5},
+        }
+        cases["line-width"] = thick_line
+
+        arrowhead = self._phase_curve_visual()
+        arrowhead["schema"]["scene"]["primitives"][2] = {
+            "kind": "arrow", "semanticId": "path", "x1": 0.70, "y1": 0.50,
+            "x2": 0.995, "y2": 0.50, "label": "direction",
+        }
+        cases["arrowhead"] = arrowhead
+
+        text = self._phase_curve_visual()
+        text["schema"]["scene"]["primitives"][2] = {
+            "kind": "text", "semanticId": "path", "x": 0.99, "y": 0.50,
+            "text": "outside", "style": {"textAnchor": "start"},
+        }
+        cases["text"] = text
+
+        marker = self._phase_curve_visual()
+        marker["schema"]["scene"]["primitives"][2] = {
+            "kind": "marker", "semanticId": "path", "x": 0.99, "y": 0.50,
+            "marker": "dot", "size": 20,
+        }
+        cases["marker-radius"] = marker
+
+        circle = self._phase_curve_visual()
+        circle["schema"]["scene"]["primitives"][2] = {
+            "kind": "circle", "semanticId": "path", "cx": 0.99, "cy": 0.50, "r": 0.02,
+        }
+        cases["circle-radius"] = circle
+
+        ellipse = self._phase_curve_visual()
+        ellipse["schema"]["scene"]["primitives"][2] = {
+            "kind": "ellipse", "semanticId": "path", "cx": 0.50, "cy": 0.99,
+            "rx": 0.02, "ry": 0.02,
+        }
+        cases["ellipse-radius"] = ellipse
+
+        dimension = self._phase_curve_visual()
+        dimension["schema"]["scene"]["primitives"][2] = {
+            "kind": "dimension", "semanticId": "path", "x1": 0.40, "y1": 0.97,
+            "x2": 0.60, "y2": 0.97, "label": "dimension label",
+        }
+        cases["dimension-label"] = dimension
+
+        repeated = self._phase_curve_visual()
+        repeated["schema"]["scene"]["primitives"][2] = {
+            "kind": "repeat", "semanticId": "path", "count": 3,
+            "translate": [0.10, 0],
+            "primitive": {"kind": "marker", "x": 0.78, "y": 0.50, "size": 20},
+        }
+        cases["transformed-repeat"] = repeated
+
+        for name, visual in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "canvas"):
+                    reconstructed_visual_flowable(visual)
+
+    def test_axis_ticks_and_optional_labels_are_rendered_as_artifacts(self):
+        visual = self._phase_curve_visual()
+        visual["schema"]["scene"]["primitives"][0]["ticks"] = [
+            {"position": 0.25, "label": "cold"},
+            {"position": 0.75},
+        ]
+
+        flowable = reconstructed_visual_flowable(visual)
+
+        self.assertIn("cold", flowable._lesson_semantic_labels)
+        self.assertEqual(flowable._lesson_axis_tick_count, 2)
+        self.assertGreaterEqual(sum(isinstance(item, Line) for item in flowable.contents), 5)
+
+    def test_axis_tick_labels_are_included_in_visible_bounds(self):
+        visual = self._phase_curve_visual()
+        visual["schema"]["scene"]["primitives"][0].update({
+            "y1": 0.031,
+            "y2": 0.031,
+            "ticks": [{"position": 0.5, "label": "below"}],
+        })
+        with self.assertRaisesRegex(ValueError, "canvas"):
+            reconstructed_visual_flowable(visual)
+
+    def test_nonuniform_group_scaling_turns_a_circle_into_the_correct_ellipse(self):
+        visual = self._phase_curve_visual()
+        visual["schema"]["scene"]["primitives"][2] = {
+            "kind": "group", "semanticId": "path", "transform": {"scale": [0.5, 0.8]},
+            "primitives": [{"kind": "circle", "cx": 0.50, "cy": 0.50, "r": 0.05}],
+        }
+
+        flowable = reconstructed_visual_flowable(visual)
+        ellipse = next(item for item in flowable.contents if isinstance(item, Ellipse))
+
+        self.assertAlmostEqual(ellipse.rx, 5.625)
+        self.assertAlmostEqual(ellipse.ry, 9.0)
+
+    def test_semantic_ids_are_globally_unique_and_relationship_refs_are_nonempty(self):
+        collisions = []
+
+        entity_collision = self._phase_curve_visual()
+        entity_collision["entities"][0]["id"] = "path"
+        collisions.append(("entity-primitive", entity_collision))
+
+        relationship_collision = self._phase_curve_visual()
+        relationship_collision["relationships"][0]["id"] = "path"
+        collisions.append(("relationship-primitive", relationship_collision))
+
+        duplicate_relationship = self._phase_curve_visual()
+        duplicate_relationship["relationships"].append(copy.deepcopy(duplicate_relationship["relationships"][0]))
+        collisions.append(("duplicate-relationship", duplicate_relationship))
+
+        duplicate_entity = self._phase_curve_visual()
+        duplicate_entity["entities"][1]["id"] = duplicate_entity["entities"][0]["id"]
+        collisions.append(("duplicate-entity", duplicate_entity))
+
+        duplicate_primitive = self._phase_curve_visual()
+        duplicate_primitive["schema"]["scene"]["primitives"][1]["semanticId"] = "path"
+        collisions.append(("duplicate-primitive", duplicate_primitive))
+
+        invariant_collision = self._phase_curve_visual()
+        invariant_collision["invariants"][0]["id"] = "path"
+        collisions.append(("invariant-primitive", invariant_collision))
+
+        constraint_collision = self._phase_curve_visual()
+        constraint_collision["constraints"][0]["id"] = "path"
+        collisions.append(("constraint-primitive", constraint_collision))
+
+        for name, visual in collisions:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "duplicate semantic id"):
+                    reconstructed_visual_flowable(visual)
+
+        empty_refs = self._phase_curve_visual()
+        empty_refs["relationships"][0]["primitiveIds"] = []
+        with self.assertRaisesRegex(ValueError, "primitiveIds"):
+            reconstructed_visual_flowable(empty_refs)
+
+    def test_malformed_nested_json_always_raises_value_error(self):
+        cases = []
+
+        primitive = self._phase_curve_visual()
+        primitive["schema"]["scene"]["primitives"] = [None]
+        cases.append(("primitive-null", primitive))
+
+        style = self._phase_curve_visual()
+        style["schema"]["scene"]["primitives"][0]["style"] = {"stroke": []}
+        cases.append(("style-list", style))
+
+        refs = self._phase_curve_visual()
+        refs["relationships"][0]["primitiveIds"] = [{}]
+        cases.append(("ref-object", refs))
+
+        label = self._phase_curve_visual()
+        label["schema"]["scene"]["primitives"][0]["label"] = 7
+        cases.append(("label-number", label))
+
+        scene = self._phase_curve_visual()
+        scene["schema"]["scene"] = 3
+        cases.append(("scene-number", scene))
+
+        tube = self._tube_visual()
+        tube["schema"]["tube"]["shape"] = []
+        cases.append(("tube-list", tube))
+
+        for name, visual in cases:
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    reconstructed_visual_flowable(visual)
+
+    def test_all_malformed_style_ref_label_tube_and_scene_shapes_raise_value_error(self):
+        cases = []
+        malformed_values = ([], {}, None, 7)
+
+        for value in ([], None, 7):
+            visual = self._phase_curve_visual()
+            visual["schema"]["scene"]["primitives"][0]["style"] = value
+            cases.append((f"style-container-{type(value).__name__}", visual))
+        for value in malformed_values:
+            visual = self._phase_curve_visual()
+            visual["schema"]["scene"]["primitives"][0]["style"] = {"dash": value}
+            cases.append((f"style-token-{type(value).__name__}", visual))
+        for value in malformed_values:
+            visual = self._phase_curve_visual()
+            visual["relationships"][0]["primitiveIds"] = [value]
+            cases.append((f"ref-{type(value).__name__}", visual))
+        for value in malformed_values:
+            visual = self._phase_curve_visual()
+            visual["schema"]["scene"]["primitives"][0]["label"] = value
+            cases.append((f"label-{type(value).__name__}", visual))
+        for value in malformed_values:
+            visual = self._hess_path_visual()
+            visual["schema"]["scene"]["primitives"][5]["label"] = value
+            cases.append((f"connector-label-{type(value).__name__}", visual))
+        for value in malformed_values:
+            visual = self._tube_visual()
+            visual["schema"]["tube"] = value
+            cases.append((f"tube-{type(value).__name__}", visual))
+        for value in malformed_values:
+            visual = self._phase_curve_visual()
+            visual["schema"]["scene"] = value
+            cases.append((f"scene-{type(value).__name__}", visual))
+        for value in malformed_values:
+            visual = self._phase_curve_visual()
+            visual["schema"]["scene"]["primitives"][0]["kind"] = value
+            cases.append((f"kind-{type(value).__name__}", visual))
+
+        for name, visual in cases:
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    reconstructed_visual_flowable(visual)
 
     def test_tube_adapter_synthesizes_equation_only_from_validated_relation_terms(self):
         flowable = reconstructed_visual_flowable(self._tube_visual())
@@ -165,6 +381,34 @@ class VisualFlowableTests(unittest.TestCase):
         contradictory_sign["schema"]["pressureRelation"]["terms"][0]["operator"] = "-"
         with self.assertRaisesRegex(ValueError, "sign"):
             reconstructed_visual_flowable(contradictory_sign)
+
+        injected_factor = self._tube_visual()
+        injected_factor["schema"]["pressureRelation"]["terms"][0]["factors"] = ["rho g h + injected"]
+        with self.assertRaisesRegex(ValueError, "allowlisted"):
+            reconstructed_visual_flowable(injected_factor)
+
+        legacy_value = self._tube_visual()
+        legacy_value["schema"]["pressureRelation"]["terms"][0] = {"operator": "+", "value": "rho g h"}
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            reconstructed_visual_flowable(legacy_value)
+
+        injected_symbol = self._tube_visual()
+        injected_symbol["schema"]["pressureRelation"]["lhs"] = "P_gas = malicious"
+        with self.assertRaisesRegex(ValueError, "allowlisted"):
+            reconstructed_visual_flowable(injected_symbol)
+
+        equal_levels = self._tube_visual()
+        equal_levels["schema"]["tube"]["liquidLevels"] = {"left": 0.4, "right": 0.4}
+        with self.assertRaisesRegex(ValueError, "differ"):
+            reconstructed_visual_flowable(equal_levels)
+
+        swapped_symbols = self._tube_visual()
+        swapped_symbols["schema"]["pressureRelation"].update({
+            "lhs": "atmospheric_pressure",
+            "base": "gas_pressure",
+        })
+        with self.assertRaisesRegex(ValueError, "gas_pressure.*atmospheric_pressure"):
+            reconstructed_visual_flowable(swapped_symbols)
 
     @staticmethod
     def _visual(scene, *, title):
@@ -233,7 +477,10 @@ class VisualFlowableTests(unittest.TestCase):
                 "tube": {"shape": "U", "sealedSide": "left", "openSide": "right", "liquidLevels": {"left": 0.30, "right": 0.64}},
                 "labels": {"sealed": "P_gas", "open": "P_atm", "liquid": "Hg", "height": "h"},
                 "pressureArrows": [{"side": "left", "direction": "down", "label": "P_gas"}, {"side": "right", "direction": "down", "label": "P_atm"}],
-                "pressureRelation": {"lhs": "P_gas", "operator": "=", "base": "P_atm", "terms": [{"operator": "+", "value": "rho g h"}]},
+                "pressureRelation": {
+                    "lhs": "gas_pressure", "operator": "=", "base": "atmospheric_pressure",
+                    "terms": [{"operator": "+", "factors": ["density", "gravity", "height"]}],
+                },
             },
         }
 

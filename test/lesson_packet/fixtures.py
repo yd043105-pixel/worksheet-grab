@@ -5,9 +5,10 @@ def valid_lesson_dict():
         "visuals": [{
             "id": "visual-pressure", "sourcePage": 1, "figureLabel": "fixture",
             "purpose": "압력의 입자 모형", "reuseMode": "reconstruct",
-            "entities": ["기체 입자", "용기 벽"],
-            "relationships": ["입자가 벽에 충돌한다"],
-            "invariants": ["입자 수가 많을수록 같은 부피에서 충돌 빈도가 증가한다"],
+            "entities": [{"id": "particle", "label": "기체 입자"}, {"id": "wall", "label": "용기 벽"}],
+            "relationships": [{"id": "collision", "kind": "collides", "from": "particle", "to": "wall", "primitiveIds": ["particle-path"]}],
+            "invariants": [{"id": "volume", "kind": "constant", "refs": ["particle-path"]}],
+            "schema": {"scene": {"canvas": {"id": "pressure-scene", "width": 200, "height": 120}, "primitives": [{"kind": "path", "semanticId": "particle-path", "points": [[0.2, 0.3], [0.8, 0.7]]}]}},
             "axes": [], "units": []
         }],
         "periods": [{

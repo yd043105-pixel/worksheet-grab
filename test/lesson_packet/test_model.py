@@ -177,6 +177,20 @@ class LessonModelTests(unittest.TestCase):
                     validate_lesson_dict(lesson),
                 )
 
+    def test_lesson_validation_rejects_renderer_invalid_visuals_upstream(self):
+        lesson = valid_lesson_dict()
+        lesson["visuals"][0]["schema"]["scene"]["primitives"][0]["style"] = {"fill": "red"}
+        errors = validate_lesson_dict(lesson)
+        self.assertIn("visual:visual-pressure:reconstruct-invalid", errors)
+        self.assertIn("period-1-phenomenon-source-missing", errors)
+
+    def test_lesson_validation_rejects_malformed_visual_entries_without_crashing(self):
+        for visual in (None, 3, [], "visual"):
+            with self.subTest(visual=visual):
+                lesson = valid_lesson_dict()
+                lesson["visuals"] = [visual]
+                self.assertIn("visual-invalid", validate_lesson_dict(lesson))
+
 
 if __name__ == "__main__":
     unittest.main()

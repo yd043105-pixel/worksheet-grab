@@ -1,6 +1,7 @@
+import copy
+import json
 import tempfile
 import unittest
-import json
 from pathlib import Path
 
 from pypdf import PdfWriter
@@ -12,6 +13,8 @@ from tools.lesson_packet.source_extract import (
     render_source_pages,
     validate_visual_map,
 )
+from tools.lesson_packet.visuals import reconstructed_visual_flowable
+from fixtures import valid_lesson_dict
 
 
 class SourceExtractTests(unittest.TestCase):
@@ -74,6 +77,64 @@ class SourceExtractTests(unittest.TestCase):
 
 
 class VisualMapTests(unittest.TestCase):
+    def test_reconstruct_visual_contract_is_validated_upstream_and_consumed_downstream(self):
+        visual = valid_lesson_dict()["visuals"][0]
+        self.assertEqual([], validate_visual_map(visual))
+        self.assertGreater(reconstructed_visual_flowable(visual).width, 0)
+
+    def test_reconstruct_requires_scene_but_crop_does_not(self):
+        reconstruct = {"sourcePage": 1, "reuseMode": "reconstruct", "entities": [], "relationships": [], "invariants": []}
+        self.assertIn("reconstruct-scene-missing", validate_visual_map(reconstruct))
+        crop = {"sourcePage": 1, "reuseMode": "crop", "crop": [0, 0, 1, 1]}
+        self.assertEqual([], validate_visual_map(crop))
+
+    def test_reconstruct_validation_deeply_matches_renderer(self):
+        cases = []
+
+        bad_style = valid_lesson_dict()["visuals"][0]
+        bad_style["schema"]["scene"]["primitives"][0]["style"] = {"stroke": "red"}
+        cases.append(("style", bad_style))
+
+        bad_reference = valid_lesson_dict()["visuals"][0]
+        bad_reference["relationships"][0]["to"] = "missing"
+        cases.append(("reference", bad_reference))
+
+        bad_scene = valid_lesson_dict()["visuals"][0]
+        bad_scene["schema"]["scene"]["primitives"] = [None]
+        cases.append(("scene", bad_scene))
+
+        clipped_marker = valid_lesson_dict()["visuals"][0]
+        clipped_marker["schema"]["scene"]["primitives"][0] = {
+            "kind": "marker", "semanticId": "particle-path", "x": 0.99, "y": 0.5, "size": 20,
+        }
+        cases.append(("bounds", clipped_marker))
+
+        for name, visual in cases:
+            with self.subTest(name=name):
+                errors = validate_visual_map(visual)
+                self.assertIn("reconstruct-invalid", errors)
+                with self.assertRaises(ValueError):
+                    reconstructed_visual_flowable(visual)
+
+    def test_crop_maps_ignore_reconstruction_only_fields(self):
+        crop = {
+            "sourcePage": 1,
+            "reuseMode": "crop",
+            "crop": [0, 0, 1, 1],
+            "schema": {"scene": None},
+            "entities": 7,
+            "relationships": {},
+            "invariants": None,
+        }
+        self.assertEqual([], validate_visual_map(crop))
+
+    def test_visual_map_rejects_malformed_json_without_raw_exceptions(self):
+        for entry in ([], None, 3, "visual"):
+            with self.subTest(entry=entry):
+                self.assertEqual(["visual-invalid"], validate_visual_map(entry))
+        visual = valid_lesson_dict()["visuals"][0]
+        visual["reuseMode"] = []
+        self.assertIn("reuse-mode-invalid", validate_visual_map(visual))
     def test_visual_crop_bounds_are_normalized(self):
         errors = validate_visual_map(
             {"sourcePage": 1, "crop": [0.1, 0.2, 0.9, 0.8], "reuseMode": "crop"}
@@ -85,18 +146,7 @@ class VisualMapTests(unittest.TestCase):
         )
 
     def test_visual_map_requires_one_based_pages_and_valid_semantic_fields(self):
-        valid = {
-            "id": "gas-particles",
-            "sourcePage": 1,
-            "figureLabel": "particle model",
-            "purpose": "Explain pressure",
-            "reuseMode": "reconstruct",
-            "entities": ["particle", "container"],
-            "relationships": ["particles collide with the container"],
-            "invariants": ["container volume is constant"],
-            "axes": [],
-            "units": [],
-        }
+        valid = copy.deepcopy(valid_lesson_dict()["visuals"][0])
         self.assertEqual(validate_visual_map(valid), [])
         self.assertIn("source-page-must-be-one-based", validate_visual_map({**valid, "sourcePage": 0}))
         self.assertIn("figure-label-missing", validate_visual_map({**valid, "figureLabel": " "}))

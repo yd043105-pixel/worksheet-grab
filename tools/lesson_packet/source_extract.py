@@ -8,6 +8,8 @@ from pathlib import Path
 import pypdfium2 as pdfium
 from pypdf import PdfReader
 
+from tools.lesson_packet.visuals import validate_reconstructed_visual
+
 
 LESSON_RE = re.compile(r"\((\d+)차시 분량\)\.pdf$")
 DEFAULT_SOURCE_ROOT = Path("C:/Users/user/Desktop/물질과 에너지 교과서")
@@ -94,13 +96,15 @@ def _string_list(value: object) -> bool:
 
 def validate_visual_map(entry: dict, rendered_metadata: dict | None = None) -> list[str]:
     """Return deterministic visual-map errors, including stale render source hashes."""
+    if not isinstance(entry, dict):
+        return ["visual-invalid"]
     errors = []
     source_page = entry.get("sourcePage")
     if isinstance(source_page, bool) or not isinstance(source_page, int) or source_page < 1:
         errors.append("source-page-must-be-one-based")
 
     reuse_mode = entry.get("reuseMode")
-    if reuse_mode not in REUSE_MODES:
+    if not isinstance(reuse_mode, str) or reuse_mode not in REUSE_MODES:
         errors.append("reuse-mode-invalid")
 
     crop = entry.get("crop")
@@ -124,11 +128,26 @@ def validate_visual_map(entry: dict, rendered_metadata: dict | None = None) -> l
     for field, error in semantic_fields.items():
         if field in entry and not _nonempty_text(entry[field]):
             errors.append(error)
-    for field in ("entities", "relationships", "invariants", "axes", "units"):
-        if field in entry and not _string_list(entry[field]):
-            errors.append(f"{field}-invalid")
+    if reuse_mode == "reconstruct":
+        schema = entry.get("schema")
+        if not isinstance(schema, dict) or not isinstance(schema.get("scene"), dict):
+            errors.append("reconstruct-scene-missing")
+        for field in ("entities", "relationships", "invariants"):
+            value = entry.get(field)
+            if not isinstance(value, list) or not value or any(not isinstance(item, dict) for item in value):
+                errors.append(f"{field}-invalid")
+        try:
+            validate_reconstructed_visual(entry, require_scene=True)
+        except ValueError:
+            errors.append("reconstruct-invalid")
+    else:
+        for field in ("axes", "units"):
+            if field in entry and not _string_list(entry[field]):
+                errors.append(f"{field}-invalid")
 
     if rendered_metadata is not None:
+        if not isinstance(rendered_metadata, dict):
+            return errors + ["rendered-metadata-invalid"]
         rendered_hash = rendered_metadata.get("sourceSha256")
         visual_hash = entry.get("sourceSha256")
         if not _nonempty_text(rendered_hash) or not _nonempty_text(visual_hash):
