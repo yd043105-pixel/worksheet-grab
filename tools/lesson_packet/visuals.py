@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,8 @@ from reportlab.platypus import Image
 
 MAX_VISUAL_WIDTH = 154 * mm
 MAX_VISUAL_HEIGHT = 110 * mm
+MAX_NESTING_DEPTH = 8
+MAX_EXPANDED_REPEAT_INSTANCES = 10_000
 GRAY_TOKENS = {
     "ink": HexColor("#1D1D1D"),
     "muted": HexColor("#777777"),
@@ -41,6 +44,7 @@ PRESSURE_FACTOR_SYMBOLS = {
     "gravity": "g",
     "height": "h",
 }
+EQUATION_SYNTAX = re.compile(r"(?:=|[≠≤≥∝]|\\(?:frac|sqrt|times|cdot)|\$)")
 
 
 def _normalized_crop(value: Any) -> tuple[float, float, float, float]:
@@ -72,6 +76,8 @@ def _page_image_path(visual: dict, root: Path) -> Path:
 
 def source_crop_flowable(visual: dict, page_image_root: Path | str) -> Image:
     """Return a ReportLab flowable cropped from normalized source-page bounds."""
+    if not isinstance(visual, dict):
+        raise ValueError("visual must be an object")
     left, top, right, bottom = _normalized_crop(visual.get("crop"))
     with PillowImage.open(_page_image_path(visual, Path(page_image_root))) as source:
         width, height = source.size
@@ -93,6 +99,17 @@ def _text(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be non-empty text")
     return value.strip()
+
+
+def _label_text(value: Any, name: str) -> str:
+    result = _text(value, name)
+    if EQUATION_SYNTAX.search(result):
+        raise ValueError("label contains forbidden equation syntax")
+    return result
+
+
+def _text_content(value: Any, name: str, *, equation: bool = False) -> str:
+    return _text(value, name) if equation else _label_text(value, name)
 
 
 def _number(value: Any, name: str, minimum: float | None = None, maximum: float | None = None) -> float:
@@ -142,6 +159,22 @@ def _point(value: Any, name: str) -> tuple[float, float]:
     return _number(value[0], f"{name} x", 0, 1), _number(value[1], f"{name} y", 0, 1)
 
 
+def _scale(value: Any, name: str) -> tuple[float, float]:
+    if isinstance(value, (list, tuple)):
+        if len(value) != 2:
+            raise ValueError(f"{name} must be a positive scalar or [x, y] pair")
+        values = value
+    else:
+        values = (value, value)
+    result = []
+    for axis, item in zip(("x", "y"), values):
+        component = _number(item, f"{name} {axis}", 0, 1)
+        if component <= 0:
+            raise ValueError(f"{name} must be positive")
+        result.append(component)
+    return result[0], result[1]
+
+
 def _primitive_ids(primitives: list[dict], known_ids: set[str] | None = None) -> set[str]:
     ids = set() if known_ids is None else known_ids
     for primitive in primitives:
@@ -163,9 +196,11 @@ def _primitive_ids(primitives: list[dict], known_ids: set[str] | None = None) ->
     return ids
 
 
-def _validate_primitive(primitive: dict, *, nested: bool = False) -> None:
+def _validate_primitive(primitive: dict, *, depth: int = 0) -> tuple[int, int]:
     if not isinstance(primitive, dict):
         raise ValueError("primitive must be an object")
+    if depth > MAX_NESTING_DEPTH:
+        raise ValueError(f"primitive nesting depth exceeds {MAX_NESTING_DEPTH}")
     kind = primitive.get("kind")
     if not isinstance(kind, str) or kind not in PRIMITIVE_KINDS:
         raise ValueError("primitive kind is unsupported")
@@ -188,6 +223,8 @@ def _validate_primitive(primitive: dict, *, nested: bool = False) -> None:
         "repeat": {"count", "translate", "primitive"},
     }
     _known_fields(primitive, common | specific[kind], "primitive")
+    if kind in {"group", "repeat"} and "style" in primitive:
+        raise ValueError(f"{kind} style is unsupported")
     if "style" in primitive and not isinstance(primitive["style"], dict):
         raise ValueError("style must be an object")
     _style(primitive.get("style"))
@@ -195,11 +232,11 @@ def _validate_primitive(primitive: dict, *, nested: bool = False) -> None:
         for field in ("x1", "y1", "x2", "y2"):
             _number(primitive.get(field), f"primitive {field}", 0, 1)
         if kind in {"arrow", "dimension", "axis"}:
-            _text(primitive.get("label"), f"{kind} label")
+            _label_text(primitive.get("label"), f"{kind} label")
             if primitive["x1"] == primitive["x2"] and primitive["y1"] == primitive["y2"]:
                 raise ValueError(f"{kind} endpoints must differ")
         elif kind == "connector" and "label" in primitive:
-            _text(primitive["label"], "connector label")
+            _label_text(primitive["label"], "connector label")
         if kind == "axis" and "ticks" in primitive:
             ticks = primitive["ticks"]
             if not isinstance(ticks, list):
@@ -210,7 +247,8 @@ def _validate_primitive(primitive: dict, *, nested: bool = False) -> None:
                 _known_fields(tick, {"position", "label"}, "axis tick")
                 _number(tick.get("position"), "axis tick position", 0, 1)
                 if "label" in tick:
-                    _text(tick["label"], "axis tick label")
+                    _label_text(tick["label"], "axis tick label")
+        return 1, False
     elif kind in {"polyline", "path"}:
         points = primitive.get("points")
         if not isinstance(points, list) or len(points) < 2:
@@ -219,6 +257,7 @@ def _validate_primitive(primitive: dict, *, nested: bool = False) -> None:
             _point(point, f"{kind} point")
         if "closed" in primitive and not isinstance(primitive["closed"], bool):
             raise ValueError(f"{kind} closed must be boolean")
+        return 1, False
     elif kind in {"rect", "rounded_rect"}:
         for field in ("x", "y", "width", "height"):
             _number(primitive.get(field), f"{kind} {field}", 0, 1)
@@ -226,14 +265,19 @@ def _validate_primitive(primitive: dict, *, nested: bool = False) -> None:
             raise ValueError(f"{kind} exceeds normalized canvas")
         if kind == "rounded_rect":
             _number(primitive.get("radius"), "rounded_rect radius", 0, min(primitive["width"], primitive["height"]) / 2)
+        return 1, False
     elif kind in {"circle", "ellipse"}:
         fields = ("cx", "cy", "r") if kind == "circle" else ("cx", "cy", "rx", "ry")
         for field in fields:
             _number(primitive.get(field), f"{kind} {field}", 0, 1)
+        return 1, False
     elif kind == "text":
         _number(primitive.get("x"), "text x", 0, 1)
         _number(primitive.get("y"), "text y", 0, 1)
-        _text(primitive.get("text"), "text")
+        semantic_id = primitive.get("semanticId")
+        is_equation = isinstance(semantic_id, str) and "equation" in semantic_id.lower()
+        _text_content(primitive.get("text"), "text", equation=is_equation)
+        return 1, False
     elif kind == "marker":
         _number(primitive.get("x"), "marker x", 0, 1)
         _number(primitive.get("y"), "marker y", 0, 1)
@@ -241,9 +285,10 @@ def _validate_primitive(primitive: dict, *, nested: bool = False) -> None:
         if not isinstance(marker, str) or marker not in {"dot", "cross", "x"}:
             raise ValueError("marker is unsupported")
         if "label" in primitive:
-            _text(primitive["label"], "marker label")
+            _label_text(primitive["label"], "marker label")
         if "size" in primitive:
             _number(primitive["size"], "marker size", 1, 20)
+        return 1, False
     elif kind == "group":
         transform = primitive.get("transform", {})
         if not isinstance(transform, dict):
@@ -252,26 +297,33 @@ def _validate_primitive(primitive: dict, *, nested: bool = False) -> None:
         if "translate" in transform:
             _point(transform["translate"], "group translate")
         if "scale" in transform:
-            scale = transform["scale"]
-            if isinstance(scale, list):
-                _point(scale, "group scale")
-            else:
-                _number(scale, "group scale", 0, 1)
+            _scale(transform["scale"], "group scale")
         children = primitive.get("primitives")
         if not isinstance(children, list) or not children:
             raise ValueError("group requires primitives")
+        expanded_instances = 0
+        expanded_repeat_instances = 0
         for child in children:
-            _validate_primitive(child, nested=True)
+            child_instances, child_repeat_instances = _validate_primitive(child, depth=depth + 1)
+            expanded_instances += child_instances
+            expanded_repeat_instances += child_repeat_instances
+        if expanded_repeat_instances > MAX_EXPANDED_REPEAT_INSTANCES:
+            raise ValueError(f"repeat expansion exceeds {MAX_EXPANDED_REPEAT_INSTANCES} instances")
+        return expanded_instances, expanded_repeat_instances
     else:
         count = primitive.get("count")
         if isinstance(count, bool) or not isinstance(count, int):
             raise ValueError("repeat count must be an integer")
-        _number(count, "repeat count", 1, 100)
+        _number(count, "repeat count", 1, MAX_EXPANDED_REPEAT_INSTANCES)
         _point(primitive.get("translate"), "repeat translate")
         child = primitive.get("primitive")
         if not isinstance(child, dict):
             raise ValueError("repeat requires a primitive")
-        _validate_primitive(child, nested=True)
+        child_instances, _ = _validate_primitive(child, depth=depth + 1)
+        expanded_instances = count * child_instances
+        if expanded_instances > MAX_EXPANDED_REPEAT_INSTANCES:
+            raise ValueError(f"repeat expansion exceeds {MAX_EXPANDED_REPEAT_INSTANCES} instances")
+        return expanded_instances, expanded_instances
 
 
 def _text_bounds(text: str, x: float, y: float, style: dict) -> tuple[float, float, float, float]:
@@ -425,7 +477,7 @@ def _validate_semantics(visual: dict, primitive_ids: set[str]) -> None:
         entity_id = register(entity.get("id"), "entity id")
         entity_ids.add(entity_id)
         if "label" in entity:
-            _text(entity["label"], "entity label")
+            _label_text(entity["label"], "entity label")
     relationships = visual.get("relationships")
     if not isinstance(relationships, list) or not relationships:
         raise ValueError("relationships must be a non-empty list")
@@ -471,8 +523,12 @@ def _scene_from_schema(schema: dict) -> dict:
     primitives = scene.get("primitives")
     if not isinstance(primitives, list) or not primitives:
         raise ValueError("scene requires ordered primitives")
+    expanded_repeat_instances = 0
     for primitive in primitives:
-        _validate_primitive(primitive)
+        _, primitive_repeat_instances = _validate_primitive(primitive)
+        expanded_repeat_instances += primitive_repeat_instances
+        if expanded_repeat_instances > MAX_EXPANDED_REPEAT_INSTANCES:
+            raise ValueError(f"repeat expansion exceeds {MAX_EXPANDED_REPEAT_INSTANCES} instances")
         _validate_transformed_bounds(primitive, canvas["width"], canvas["height"])
     return scene
 
@@ -575,7 +631,7 @@ def _tube_scene(schema: dict) -> dict:
             raise ValueError("pressure arrow side or direction is invalid")
         start_x = left_x if side == "left" else right_x
         dx, dy = delta[direction]
-        primitives.append({"kind": "arrow", "semanticId": f"pressure-arrow-{index}", "x1": start_x, "y1": 0.73, "x2": start_x + dx, "y2": 0.73 + dy, "label": _text(arrow.get("label"), "pressure arrow label")})
+        primitives.append({"kind": "arrow", "semanticId": f"pressure-arrow-{index}", "x1": start_x, "y1": 0.73, "x2": start_x + dx, "y2": 0.73 + dy, "label": _label_text(arrow.get("label"), "pressure arrow label")})
     return {"canvas": {"id": "tube-adapter", "width": 420, "height": 225}, "primitives": primitives}
 
 
@@ -711,7 +767,13 @@ def reconstructed_visual_flowable(visual: dict) -> Drawing:
     """Render an explicit scene schema; title keywords never select diagram behavior."""
     scene = _validated_scene(visual)
     canvas = scene["canvas"]
-    drawing = _drawing(canvas["width"], canvas["height"])
+    scale = min(
+        1.0,
+        MAX_VISUAL_WIDTH / canvas["width"],
+        MAX_VISUAL_HEIGHT / canvas["height"],
+    )
+    drawing = _drawing(canvas["width"] * scale, canvas["height"] * scale)
+    drawing._lesson_scene_scale = scale
     for primitive in scene["primitives"]:
         _render_primitive(drawing, primitive, drawing.width, drawing.height)
     return drawing

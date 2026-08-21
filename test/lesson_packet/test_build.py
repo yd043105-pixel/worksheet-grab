@@ -106,6 +106,78 @@ class VisualFlowableTests(unittest.TestCase):
                     {"sourcePage": 1, "crop": [0.8, 0.1, 0.2, 0.9]}, Path(directory)
                 )
 
+    def test_source_crop_flowable_rejects_non_object_visual_deterministically(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "visual must be an object"):
+                source_crop_flowable([], Path(directory))
+
+    def test_reconstruction_rejects_non_positive_group_scales(self):
+        for scale in (0, [0, 0.5]):
+            visual = self._phase_curve_visual()
+            visual["schema"]["scene"]["primitives"][2] = {
+                "kind": "group", "semanticId": "path",
+                "transform": {"translate": [0.5, 0.5], "scale": scale},
+                "primitives": [{"kind": "line", "x1": 0.2, "y1": 0.2, "x2": 0.8, "y2": 0.8}],
+            }
+            with self.subTest(scale=scale):
+                with self.assertRaises(ValueError):
+                    reconstructed_visual_flowable(visual)
+
+    def test_reconstruction_caps_nesting_depth_and_nested_repeat_expansion(self):
+        nested_groups = {"kind": "line", "x1": 0.2, "y1": 0.2, "x2": 0.8, "y2": 0.8}
+        for _ in range(9):
+            nested_groups = {"kind": "group", "primitives": [nested_groups]}
+        too_deep = self._phase_curve_visual()
+        too_deep["schema"]["scene"]["primitives"][2] = {
+            "kind": "group", "semanticId": "path", "primitives": [nested_groups]
+        }
+
+        too_many = self._phase_curve_visual()
+        too_many["schema"]["scene"]["primitives"][2] = {
+            "kind": "repeat", "semanticId": "path", "count": 101,
+            "translate": [0, 0],
+            "primitive": {
+                "kind": "repeat", "count": 100, "translate": [0, 0],
+                "primitive": {"kind": "circle", "cx": 0.5, "cy": 0.5, "r": 0.01},
+            },
+        }
+
+        for name, visual in (("depth", too_deep), ("repeat-budget", too_many)):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    reconstructed_visual_flowable(visual)
+
+    def test_reconstruction_scales_oversized_scene_proportionally_into_content_box(self):
+        visual = self._phase_curve_visual()
+        visual["schema"]["scene"]["canvas"].update({"width": 1000, "height": 800})
+
+        drawing = reconstructed_visual_flowable(visual)
+
+        from tools.lesson_packet.visuals import MAX_VISUAL_HEIGHT, MAX_VISUAL_WIDTH
+
+        self.assertLessEqual(drawing.width, MAX_VISUAL_WIDTH)
+        self.assertLessEqual(drawing.height, MAX_VISUAL_HEIGHT)
+        self.assertAlmostEqual(drawing.width / drawing.height, 1000 / 800)
+
+    def test_reconstruction_rejects_style_on_group_and_repeat_nodes(self):
+        for kind, node in (
+            ("group", {"kind": "group", "style": {}, "primitives": [{"kind": "line", "x1": 0.2, "y1": 0.2, "x2": 0.8, "y2": 0.8}]}),
+            ("repeat", {"kind": "repeat", "style": {}, "count": 2, "translate": [0, 0], "primitive": {"kind": "circle", "cx": 0.5, "cy": 0.5, "r": 0.01}}),
+        ):
+            visual = self._phase_curve_visual()
+            node["semanticId"] = "path"
+            visual["schema"]["scene"]["primitives"][2] = node
+            with self.subTest(kind=kind):
+                with self.assertRaises(ValueError):
+                    reconstructed_visual_flowable(visual)
+
+    def test_pressure_and_arrow_labels_reject_equation_syntax(self):
+        visual = self._tube_visual()
+        visual["schema"]["pressureArrows"][0]["label"] = "P_atm = P_gas - rho g h"
+
+        with self.assertRaisesRegex(ValueError, "label contains forbidden equation syntax"):
+            reconstructed_visual_flowable(visual)
+
     def test_generic_scene_renders_unseen_phase_curve_osmosis_and_hess_compositions(self):
         for visual in (self._phase_curve_visual(), self._osmosis_visual(), self._hess_path_visual()):
             with self.subTest(scene=visual["schema"]["scene"]["canvas"]["id"]):
