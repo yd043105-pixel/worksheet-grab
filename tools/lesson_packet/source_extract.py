@@ -1055,6 +1055,31 @@ def _audit_representatives(manifests: list[dict]) -> list[dict]:
     return results
 
 
+def _representative_audit_summary(representatives: list[dict]) -> dict:
+    errors = []
+    hazard_fields = (
+        "fragmentationDetected",
+        "axisOmissionsDetected",
+        "neighborMergesDetected",
+        "decorativePortraitRetention",
+    )
+    for representative in representatives:
+        representative_id = representative["id"]
+        blocker = representative.get("blocker")
+        if _nonempty_text(blocker):
+            errors.append(f"representative:{representative_id}:{blocker}")
+        for field in hazard_fields:
+            values = representative.get(field, [])
+            for value in sorted({str(item) for item in values if _nonempty_text(item)}):
+                errors.append(f"representative:{representative_id}:{field}:{value}")
+    return {
+        "errors": errors,
+        "invariants": {
+            "allRepresentativeEvidenceValid": not errors,
+        },
+    }
+
+
 def _audit_manifest(manifest: dict, expected_hash: str, expected_page_count: int, out_dir: Path) -> list[str]:
     errors = []
     if manifest.get("sourceSha256") != expected_hash:
@@ -1211,6 +1236,9 @@ def extract_all_candidates(
         audit_errors.extend(
             _audit_manifest(manifest, record["sha256"], record["pageCount"], out_dir)
         )
+    representatives = _audit_representatives(manifests)
+    representative_audit = _representative_audit_summary(representatives)
+    audit_errors.extend(representative_audit["errors"])
     all_candidates = [
         candidate
         for manifest in manifests
@@ -1238,10 +1266,10 @@ def extract_all_candidates(
             "allRetainedSupportedSectionsPresent": not any("candidate-section" in error for error in audit_errors),
             "allUnreadReconstructionsBlocked": not any("unread-reconstruction" in error for error in audit_errors),
             "allArtifactsPresent": not any("artifact" in error for error in audit_errors),
-            "deterministicSerialization": True,
+            **representative_audit["invariants"],
         },
         "errors": audit_errors,
-        "representatives": _audit_representatives(manifests),
+        "representatives": representatives,
     }
     (out_dir / "reviews.json").write_text(
         json.dumps(reviews, ensure_ascii=False, indent=2) + "\n",

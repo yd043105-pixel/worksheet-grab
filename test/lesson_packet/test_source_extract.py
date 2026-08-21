@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw
 from pypdf import PdfWriter
 from reportlab.pdfgen import canvas
 
+import tools.lesson_packet.source_extract as source_extract
 from tools.lesson_packet.source_extract import (
     extract_page_evidence,
     extract_page_regions,
@@ -235,6 +236,37 @@ class SourceExtractTests(unittest.TestCase):
 
 
 class SourceRegionTests(unittest.TestCase):
+    def test_representative_blockers_fail_the_aggregate_audit(self):
+        representatives = [
+            {
+                "id": "required-j-tube",
+                "blocker": "caption-complete-candidate-missing",
+                "fragmentationDetected": [],
+                "axisOmissionsDetected": [],
+                "neighborMergesDetected": [],
+                "decorativePortraitRetention": [],
+            },
+            {
+                "id": "osmosis-figures",
+                "blocker": None,
+                "fragmentationDetected": ["candidate-001"],
+                "axisOmissionsDetected": [],
+                "neighborMergesDetected": [],
+                "decorativePortraitRetention": [],
+            },
+        ]
+
+        audit = source_extract._representative_audit_summary(representatives)
+
+        self.assertEqual(
+            audit["errors"],
+            [
+                "representative:required-j-tube:caption-complete-candidate-missing",
+                "representative:osmosis-figures:fragmentationDetected:candidate-001",
+            ],
+        )
+        self.assertFalse(audit["invariants"]["allRepresentativeEvidenceValid"])
+
     def test_representative_audit_matches_candidate_related_text(self):
         candidate = {
             "id": "rate-graph",
@@ -592,6 +624,7 @@ class SourceRegionTests(unittest.TestCase):
             self.assertTrue(audit["invariants"]["allCandidatesReviewRequired"])
             self.assertTrue(audit["invariants"]["allRetainedDecisionReasonsPresent"])
             self.assertTrue(audit["invariants"]["allRetainedSupportedSectionsPresent"])
+            self.assertNotIn("deterministicSerialization", audit["invariants"])
             self.assertTrue((first_out / "reviews.json").is_file())
             reviews = json.loads((first_out / "reviews.json").read_text(encoding="utf-8"))
             self.assertEqual(len(reviews), audit["reviewCount"])
