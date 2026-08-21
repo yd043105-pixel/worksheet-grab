@@ -78,6 +78,61 @@ class LessonModelTests(unittest.TestCase):
         lesson["periods"][0]["representations"][0]["body"] = ""
         self.assertIn("period-1-representation-body-missing", validate_lesson_dict(lesson))
 
+    def test_rejects_empty_practice_entries(self):
+        for field, label in (
+            ("workedExample", "worked-example"),
+            ("guidedPractice", "guided-practice"),
+            ("independentPractice", "independent-practice"),
+            ("exitCheck", "exit-check"),
+        ):
+            with self.subTest(field=field):
+                lesson = valid_lesson_dict()
+                lesson["periods"][0][field] = {} if field == "workedExample" else [{}]
+                errors = validate_lesson_dict(lesson)
+                self.assertIn(f"period-1-{label}-prompt-missing", errors)
+                self.assertIn(f"period-1-{label}-requires-missing", errors)
+
+    def test_rejects_blank_practice_prompt(self):
+        lesson = valid_lesson_dict()
+        lesson["periods"][0]["guidedPractice"][0]["prompt"] = "  "
+        self.assertIn("period-1-guided-practice-prompt-missing", validate_lesson_dict(lesson))
+
+    def test_rejects_missing_empty_and_malformed_practice_requires(self):
+        for field, label in (
+            ("workedExample", "worked-example"),
+            ("guidedPractice", "guided-practice"),
+            ("independentPractice", "independent-practice"),
+            ("exitCheck", "exit-check"),
+        ):
+            for value, suffix in ((None, "missing"), ([], "missing"), ("concept-pressure", "invalid")):
+                with self.subTest(field=field, value=value):
+                    lesson = valid_lesson_dict()
+                    item = lesson["periods"][0][field]
+                    item = item if field == "workedExample" else item[0]
+                    if value is None:
+                        item.pop("requires")
+                    else:
+                        item["requires"] = value
+                    self.assertIn(
+                        f"period-1-{label}-requires-{suffix}",
+                        validate_lesson_dict(lesson),
+                    )
+
+    def test_requires_distinct_unique_concept_ids(self):
+        lesson = valid_lesson_dict()
+        lesson["periods"][0]["concepts"][1]["id"] = "concept-pressure"
+        errors = validate_lesson_dict(lesson)
+        self.assertIn("period-1-concepts-duplicate-id:concept-pressure", errors)
+        self.assertIn("period-1-concepts-insufficient", errors)
+
+    def test_rejects_malformed_concepts(self):
+        lesson = valid_lesson_dict()
+        lesson["periods"][0]["concepts"] = [{}, {"id": "concept-two", "term": "", "explanation": ""}]
+        errors = validate_lesson_dict(lesson)
+        self.assertIn("period-1-concept-id-missing", errors)
+        self.assertIn("period-1-concept-term-missing", errors)
+        self.assertIn("period-1-concept-explanation-missing", errors)
+
 
 if __name__ == "__main__":
     unittest.main()

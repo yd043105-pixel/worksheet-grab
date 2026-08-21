@@ -59,6 +59,23 @@ def _validate_requirements(items: list[Any], declared: set[str]) -> list[str]:
     return errors
 
 
+def _validate_practice_item(item: Any, prefix: str, declared: set[str]) -> list[str]:
+    practice = _mapping(item)
+    errors: list[str] = []
+    if not _is_present(practice.get("prompt")):
+        errors.append(f"{prefix}-prompt-missing")
+
+    if "requires" not in practice:
+        errors.append(f"{prefix}-requires-missing")
+    elif not isinstance(practice["requires"], list):
+        errors.append(f"{prefix}-requires-invalid")
+    elif not practice["requires"]:
+        errors.append(f"{prefix}-requires-missing")
+    else:
+        errors.extend(_validate_requirements([practice], declared))
+    return errors
+
+
 def validate_lesson_dict(data: dict) -> list[str]:
     """Return stable error IDs for every missing teaching prerequisite."""
     if not isinstance(data, dict):
@@ -95,16 +112,28 @@ def validate_lesson_dict(data: dict) -> list[str]:
         concepts = _items(period.get("concepts"))
         if not concepts:
             errors.append(f"{prefix}-concepts-empty")
-        elif len(concepts) < 2:
-            errors.append(f"{prefix}-concepts-insufficient")
-        concept_ids = {
-            concept.get("id")
-            for concept in concepts
-            if isinstance(concept, dict) and _is_present(concept.get("id"))
-        }
+        concept_ids: set[str] = set()
+        seen_concept_ids: set[str] = set()
         for concept in concepts:
-            if not _is_present(_mapping(concept).get("explanation")):
+            concept_data = _mapping(concept)
+            concept_id = concept_data.get("id")
+            has_id = _is_present(concept_id)
+            has_term = _is_present(concept_data.get("term"))
+            has_explanation = _is_present(concept_data.get("explanation"))
+            if not has_id:
+                errors.append(f"{prefix}-concept-id-missing")
+            elif concept_id in seen_concept_ids:
+                errors.append(f"{prefix}-concepts-duplicate-id:{concept_id}")
+            else:
+                seen_concept_ids.add(concept_id)
+                if has_term and has_explanation:
+                    concept_ids.add(concept_id)
+            if not has_term:
+                errors.append(f"{prefix}-concept-term-missing")
+            if not has_explanation:
                 errors.append(f"{prefix}-concept-explanation-missing")
+        if concepts and len(concept_ids) < 2:
+            errors.append(f"{prefix}-concepts-insufficient")
 
         errors.extend(validate_causal_chain(_mapping(period.get("causalChain"))))
 
@@ -125,8 +154,7 @@ def validate_lesson_dict(data: dict) -> list[str]:
         worked = _mapping(period.get("workedExample"))
         if not worked:
             errors.append(f"{prefix}-worked-example-empty")
-        else:
-            errors.extend(_validate_requirements([worked], declared))
+        errors.extend(_validate_practice_item(worked, f"{prefix}-worked-example", declared))
 
         for field, error_name in (
             ("guidedPractice", "guided-practice"),
@@ -136,7 +164,8 @@ def validate_lesson_dict(data: dict) -> list[str]:
             items = _items(period.get(field))
             if not items:
                 errors.append(f"{prefix}-{error_name}-empty")
-            errors.extend(_validate_requirements(items, declared))
+            for item in items:
+                errors.extend(_validate_practice_item(item, f"{prefix}-{error_name}", declared))
 
     return errors
 
