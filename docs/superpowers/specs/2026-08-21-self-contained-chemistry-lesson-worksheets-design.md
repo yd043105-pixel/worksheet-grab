@@ -2,14 +2,14 @@
 
 ## Purpose
 
-Rebuild all 31 `물질과 에너지` worksheet pairs as the sole printed material used in teacher-led lessons. A teacher must be able to explain the lesson using only the teacher PDF, and students must be able to follow the explanation and solve every task using only the student PDF.
+Build source-grounded chemistry worksheet pairs as the sole printed material used in teacher-led lessons. A teacher must be able to explain the lesson using only the teacher PDF, and students must be able to follow the explanation and solve every task using only the student PDF.
 
 The deliverables remain one student PDF and one teacher PDF for each source textbook PDF. A one-period source produces 2-3 pages per variant. A two-period source produces 4-6 pages, divided into two complete 50-minute lesson sequences.
 
-## Learner And Instructional Assumptions
+## Learner And Instructional Profile
 
-- Course: high-school elective `물질과 에너지` under the 2022 revised curriculum.
-- Baseline learner: understands moles, chemical equations, and molecular structure.
+- Course, grade band, topic, curriculum, prerequisite concepts, and lesson count come from the production brief and source material rather than this design.
+- Default baseline learner for an advanced high-school chemistry lesson understands moles, chemical equations, and molecular structure; another production brief may override that baseline.
 - Weaker learners are supported through the teacher's worked-problem explanation and visible intermediate steps.
 - Lesson mode: teacher explanation with students following, annotating, and solving on the worksheet.
 - End-of-lesson evidence: students explain a phenomenon at the particle, molecular, or energy level; interpret the corresponding expression or graph; solve a quantitative problem with conditions and units; and transfer the idea to a new situation.
@@ -133,9 +133,9 @@ Review lessons must not receive the same generic concept-map graphic used for or
 4. Verify that every question is solvable from material introduced on the same or an earlier page.
 5. Add worked and guided examples, then independent tasks.
 6. Derive the teacher variant from the approved student structure.
-7. Render three representative pilots: `기체의 성질`, `삼투 현상`, and `농도, 온도, 촉매와 반응 속도`.
-8. Run content, visual, print, and lesson-flow gates on the pilots before scaling the pattern to all 31 sources.
-9. Generate all 62 final PDFs in a staging location.
+7. Render representative pilots that cover the highest-risk lesson types in the requested source set: apparatus or spatial relationships, quantitative graphs or calculations, and particle/molecular/energy explanations.
+8. Run content, visual, print, and lesson-flow gates on the pilots before scaling the pattern to the remaining requested sources.
+9. Generate one student PDF and one teacher PDF for every requested source in a staging location.
 10. Replace the current output files only after the complete batch passes verification.
 
 ## Acceptance Gates
@@ -177,4 +177,4 @@ Review lessons must not receive the same generic concept-map graphic used for or
 
 ## Failure Policy
 
-If a lesson exceeds three pages per period, reduce repetition and redesign the information hierarchy before shrinking text. If the source visual cannot be cropped without answer leakage or loss of scientific meaning, reconstruct it from an explicit schema. If a question requires information absent from the lesson, add the missing explanation or remove the question. The batch does not replace the current files until all 31 pairs pass.
+If a lesson exceeds three pages per period, reduce repetition and redesign the information hierarchy before shrinking text. If the source visual cannot be cropped without answer leakage or loss of scientific meaning, reconstruct it from an explicit schema. If a question requires information absent from the lesson, add the missing explanation or remove the question. A batch does not replace the current files until every requested pair passes.
