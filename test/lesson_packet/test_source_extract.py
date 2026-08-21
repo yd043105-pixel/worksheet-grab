@@ -20,6 +20,8 @@ class SourceExtractTests(unittest.TestCase):
             with (root / "a(1차시 분량).pdf").open("wb") as stream:
                 writer.write(stream)
             (root / "학습지").mkdir()
+            with (root / "학습지" / "ignored(1차시 분량).pdf").open("wb") as stream:
+                writer.write(stream)
             self.assertEqual(
                 [x["sourceFile"] for x in inventory_sources(root)],
                 ["a(1차시 분량).pdf"],
