@@ -21,6 +21,8 @@ _STOP_TERMS = {
     "or", "shows", "the", "to", "with", "그림", "표", "그래프", "figure", "fig", "table",
 }
 _SECTION_FIELDS = ("sections", "entities", "quantities", "explicitReferences")
+_TEXT_ROLES = {"body", "caption", "figureInternal"}
+_EMBEDDED_TEXT_STATUSES = {"known", "unread", "none"}
 _HAZARD_ALIASES = (
     ("answerLeakage", "answer-leakage", ("answerLeakage", "answer_leakage", "answersPresent", "containsAnswer")),
     ("needsAnnotation", "annotation-needed", ("needsAnnotation", "requiredAnnotation", "annotationNeeded", "requiresAnnotation")),
@@ -84,12 +86,14 @@ def _validate_page(page: dict) -> tuple[int, str, list[dict]]:
         _require_object(block, f"page textBlocks[{index}]")
         if not _nonempty_text(block.get("id")):
             raise ValueError(f"page textBlocks[{index}] id is required")
-        if "bounds" in block:
-            _bounds(block["bounds"], f"page textBlocks[{index}] bounds")
-        if "sourcePage" in block and block["sourcePage"] != source_page:
+        block_page, block_hash = _source_trace(block, f"page textBlocks[{index}]")
+        if block_page != source_page:
             raise ValueError(f"page textBlocks[{index}] sourcePage must match page")
-        if "sourceSha256" in block and block["sourceSha256"] != source_hash:
+        if block_hash != source_hash:
             raise ValueError(f"page textBlocks[{index}] sourceSha256 must match page")
+        _bounds(block.get("bounds"), f"page textBlocks[{index}] bounds")
+        if block.get("role") not in _TEXT_ROLES:
+            raise ValueError(f"page textBlocks[{index}] role must be body, caption, or figureInternal")
     return source_page, source_hash, text_blocks
 
 
@@ -139,10 +143,23 @@ def _index_text(text_blocks: list[dict]) -> dict[str, dict]:
     return indexed
 
 
-def _resolve(indexed: dict[str, dict], ids: list[str], field: str) -> list[dict]:
+def _resolve(
+    indexed: dict[str, dict],
+    ids: list[str],
+    field: str,
+    expected_role: str | None = None,
+) -> list[dict]:
     missing = sorted(set(ids) - set(indexed))
     if missing:
         raise ValueError(f"visual candidate {field} references unknown text id: {missing[0]}")
+    if expected_role is not None:
+        wrong_role = sorted(
+            block_id for block_id in ids if indexed[block_id].get("role") != expected_role
+        )
+        if wrong_role:
+            raise ValueError(
+                f"visual candidate {field} must reference {expected_role} text: {wrong_role[0]}"
+            )
     return [copy.deepcopy(indexed[item]) for item in ids]
 
 
@@ -195,9 +212,9 @@ def link_candidate_context(page: dict, candidate: dict) -> dict:
         caption_ids = [result["captionId"]]
     related_ids = _id_list(result, "relatedTextIds")
     internal_ids = _id_list(result, "internalTextIds")
-    caption_records = _resolve(indexed, caption_ids, "captionId")
-    related_records = _resolve(indexed, related_ids, "relatedTextIds")
-    internal_records = _resolve(indexed, internal_ids, "internalTextIds")
+    caption_records = _resolve(indexed, caption_ids, "captionId", expected_role="caption")
+    related_records = _resolve(indexed, related_ids, "relatedTextIds", expected_role="body")
+    internal_records = _resolve(indexed, internal_ids, "internalTextIds", expected_role="figureInternal")
 
     if caption_records:
         caption = caption_records[0]
@@ -329,10 +346,16 @@ def _matching_terms(candidate_terms: set[str], values: Iterable[str]) -> set[str
 
 def _active_hazards(candidate: dict) -> list[str]:
     nested = candidate.get("hazards", {})
-    if nested is None:
-        nested = {}
     if not isinstance(nested, dict):
         raise ValueError("visual candidate hazards must be an object")
+    allowed_keys = {
+        alias
+        for _, _, aliases in _HAZARD_ALIASES
+        for alias in aliases
+    }
+    unknown_keys = sorted((str(key) for key in nested if key not in allowed_keys))
+    if unknown_keys:
+        raise ValueError(f"visual candidate hazard invalid: {unknown_keys[0]}")
     for key, value in nested.items():
         if not isinstance(value, bool):
             raise ValueError(f"visual candidate hazard {key} must be boolean")
@@ -350,8 +373,14 @@ def _active_hazards(candidate: dict) -> list[str]:
         if value:
             active.append(reason)
 
-    embedded_status = str(candidate.get("embeddedTextStatus", "")).casefold()
-    label_status = str(candidate.get("labelStatus", candidate.get("pixelTextStatus", ""))).casefold()
+    embedded_status = candidate.get("embeddedTextStatus")
+    if embedded_status is not None and (
+        not isinstance(embedded_status, str) or embedded_status not in _EMBEDDED_TEXT_STATUSES
+    ):
+        raise ValueError("visual candidate embeddedTextStatus must be known, unread, or none")
+    label_status = candidate.get("labelStatus", candidate.get("pixelTextStatus", ""))
+    if not isinstance(label_status, str):
+        raise ValueError("visual candidate label status must be text")
     if embedded_status == "unread" or label_status == "unread":
         active.append("label-transcription-required")
     return active
@@ -382,14 +411,13 @@ def rank_visual_candidate(candidate: dict, lesson_evidence: dict) -> dict:
 
     requested_section = _supported_section(candidate.get("supportedSection"), "supportedSection")
     section_names = {name for name, _ in sections}
-    if requested_section not in section_names:
-        requested_section = None
     ranked_sections = sorted(
         section_overlaps,
         key=lambda name: (-len(section_overlaps[name]), name),
     )
-    selected_section = requested_section
-    if selected_section is None and ranked_sections and section_overlaps[ranked_sections[0]]:
+    declared_section_missing = requested_section is not None and requested_section not in section_names
+    selected_section = requested_section if not declared_section_missing else None
+    if requested_section is None and ranked_sections and section_overlaps[ranked_sections[0]]:
         selected_section = ranked_sections[0]
     selected_overlap = section_overlaps.get(selected_section, []) if selected_section else []
 

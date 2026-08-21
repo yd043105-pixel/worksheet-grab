@@ -190,6 +190,25 @@ class VisualRankingTests(unittest.TestCase):
         self.assertIsNone(result["supportedSection"])
         self.assertIn("supported-section-missing", result["blockingReasons"])
 
+    def test_unknown_declared_section_is_not_replaced_by_inferred_matching_section(self):
+        candidate = relevant_graph_candidate(
+            supportedSection="missing-section",
+            entities=["needle"],
+            explicitReferences=[],
+        )
+        evidence = {
+            "sections": {"other-section": "The needle is instructional evidence."},
+            "entities": ["needle"],
+            "quantities": [],
+            "explicitReferences": [],
+        }
+
+        result = rank_visual_candidate(candidate, evidence)
+
+        self.assertEqual(result["decision"], "exclude")
+        self.assertIsNone(result["supportedSection"])
+        self.assertIn("supported-section-missing", result["blockingReasons"])
+
     def test_ranking_is_deterministic_and_does_not_mutate_inputs(self):
         candidate = relevant_graph_candidate()
         evidence = lesson_evidence()
@@ -218,6 +237,52 @@ class VisualRankingTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as error:
                     call()
                 self.assertTrue(str(error.exception))
+
+    def test_context_linker_requires_canonical_page_text_records(self):
+        mutations = (
+            ("missing-source-page", lambda block: block.pop("sourcePage"), "sourcePage"),
+            ("missing-source-hash", lambda block: block.pop("sourceSha256"), "sourceSha256"),
+            ("missing-bounds", lambda block: block.pop("bounds"), "bounds"),
+            ("invalid-role", lambda block: block.update(role="annotation"), "role"),
+        )
+        for name, mutate, message in mutations:
+            with self.subTest(name=name):
+                page = copy.deepcopy(_page())
+                mutate(page["textBlocks"][0])
+                with self.assertRaisesRegex(ValueError, message):
+                    link_candidate_context(page, relevant_graph_candidate())
+
+    def test_context_linker_requires_related_and_internal_roles(self):
+        cases = (
+            (
+                "related-body-only",
+                relevant_graph_candidate(relatedTextIds=["axis-pressure"]),
+                "relatedTextIds",
+            ),
+            (
+                "internal-figure-internal-only",
+                relevant_graph_candidate(internalTextIds=["body-reference"]),
+                "internalTextIds",
+            ),
+        )
+        for name, candidate, message in cases:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, message):
+                    link_candidate_context(_page(), candidate)
+
+    def test_malformed_hazard_and_embedded_status_metadata_raise_stable_value_errors(self):
+        malformed = (
+            ("unknown-hazard", relevant_graph_candidate(hazards={"unknownHazard": True}), "hazard"),
+            ("boolean-status", relevant_graph_candidate(embeddedTextStatus=True), "embeddedTextStatus"),
+            ("unsupported-status", relevant_graph_candidate(embeddedTextStatus="mystery"), "embeddedTextStatus"),
+        )
+        for name, candidate, message in malformed:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, message) as first:
+                    rank_visual_candidate(candidate, lesson_evidence())
+                with self.assertRaisesRegex(ValueError, message) as second:
+                    rank_visual_candidate(candidate, lesson_evidence())
+                self.assertEqual(str(first.exception), str(second.exception))
 
 
 if __name__ == "__main__":
