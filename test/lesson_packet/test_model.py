@@ -133,6 +133,50 @@ class LessonModelTests(unittest.TestCase):
         self.assertIn("period-1-concept-term-missing", errors)
         self.assertIn("period-1-concept-explanation-missing", errors)
 
+    def test_rejects_list_and_dict_practice_prompts_without_crashing(self):
+        for field, label in (
+            ("workedExample", "worked-example"),
+            ("guidedPractice", "guided-practice"),
+            ("independentPractice", "independent-practice"),
+            ("exitCheck", "exit-check"),
+        ):
+            for value in ([], {}):
+                with self.subTest(field=field, value=value):
+                    lesson = valid_lesson_dict()
+                    item = lesson["periods"][0][field]
+                    item = item if field == "workedExample" else item[0]
+                    item["prompt"] = value
+                    self.assertIn(
+                        f"period-1-{label}-prompt-invalid",
+                        validate_lesson_dict(lesson),
+                    )
+
+    def test_rejects_non_string_concept_fields_without_crashing(self):
+        for field, value, error in (
+            ("id", [], "period-1-concept-id-invalid"),
+            ("id", {}, "period-1-concept-id-invalid"),
+            ("term", [], "period-1-concept-term-invalid"),
+            ("term", {}, "period-1-concept-term-invalid"),
+            ("explanation", [], "period-1-concept-explanation-invalid"),
+            ("explanation", {}, "period-1-concept-explanation-invalid"),
+        ):
+            with self.subTest(field=field, value=value):
+                lesson = valid_lesson_dict()
+                lesson["periods"][0]["concepts"][1][field] = value
+                errors = validate_lesson_dict(lesson)
+                self.assertIn(error, errors)
+                self.assertIn("period-1-concepts-insufficient", errors)
+
+    def test_rejects_non_string_requirement_ids_without_crashing(self):
+        for value in ({"id": "concept-pressure"}, [], 3):
+            with self.subTest(value=value):
+                lesson = valid_lesson_dict()
+                lesson["periods"][0]["exitCheck"][0]["requires"] = [value]
+                self.assertIn(
+                    "unsupported-requirement-invalid",
+                    validate_lesson_dict(lesson),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

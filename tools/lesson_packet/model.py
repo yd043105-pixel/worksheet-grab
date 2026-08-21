@@ -43,7 +43,7 @@ def _items(value: Any) -> list[Any]:
 
 
 def _is_present(value: Any) -> bool:
-    return bool(str(value or "").strip())
+    return isinstance(value, str) and bool(value.strip())
 
 
 def validate_causal_chain(chain: dict) -> list[str]:
@@ -54,7 +54,9 @@ def _validate_requirements(items: list[Any], declared: set[str]) -> list[str]:
     errors: list[str] = []
     for item in items:
         for requirement in _items(_mapping(item).get("requires")):
-            if requirement not in declared:
+            if not _is_present(requirement):
+                errors.append("unsupported-requirement-invalid")
+            elif requirement not in declared:
                 errors.append(f"unsupported-requirement:{requirement}")
     return errors
 
@@ -62,8 +64,10 @@ def _validate_requirements(items: list[Any], declared: set[str]) -> list[str]:
 def _validate_practice_item(item: Any, prefix: str, declared: set[str]) -> list[str]:
     practice = _mapping(item)
     errors: list[str] = []
-    if not _is_present(practice.get("prompt")):
+    if "prompt" not in practice or (isinstance(practice.get("prompt"), str) and not practice["prompt"].strip()):
         errors.append(f"{prefix}-prompt-missing")
+    elif not isinstance(practice["prompt"], str):
+        errors.append(f"{prefix}-prompt-invalid")
 
     if "requires" not in practice:
         errors.append(f"{prefix}-requires-missing")
@@ -106,7 +110,7 @@ def validate_lesson_dict(data: dict) -> list[str]:
         phenomenon = _mapping(period.get("phenomenon"))
         if not _is_present(phenomenon.get("body")):
             errors.append(f"{prefix}-phenomenon-empty")
-        if phenomenon.get("visualId") not in visual_ids:
+        if not _is_present(phenomenon.get("visualId")) or phenomenon["visualId"] not in visual_ids:
             errors.append(f"{prefix}-phenomenon-source-missing")
 
         concepts = _items(period.get("concepts"))
@@ -117,21 +121,29 @@ def validate_lesson_dict(data: dict) -> list[str]:
         for concept in concepts:
             concept_data = _mapping(concept)
             concept_id = concept_data.get("id")
+            term = concept_data.get("term")
+            explanation = concept_data.get("explanation")
             has_id = _is_present(concept_id)
-            has_term = _is_present(concept_data.get("term"))
-            has_explanation = _is_present(concept_data.get("explanation"))
-            if not has_id:
+            has_term = _is_present(term)
+            has_explanation = _is_present(explanation)
+            if "id" not in concept_data or (isinstance(concept_id, str) and not concept_id.strip()):
                 errors.append(f"{prefix}-concept-id-missing")
+            elif not isinstance(concept_id, str):
+                errors.append(f"{prefix}-concept-id-invalid")
             elif concept_id in seen_concept_ids:
                 errors.append(f"{prefix}-concepts-duplicate-id:{concept_id}")
             else:
                 seen_concept_ids.add(concept_id)
                 if has_term and has_explanation:
                     concept_ids.add(concept_id)
-            if not has_term:
+            if "term" not in concept_data or (isinstance(term, str) and not term.strip()):
                 errors.append(f"{prefix}-concept-term-missing")
-            if not has_explanation:
+            elif not isinstance(term, str):
+                errors.append(f"{prefix}-concept-term-invalid")
+            if "explanation" not in concept_data or (isinstance(explanation, str) and not explanation.strip()):
                 errors.append(f"{prefix}-concept-explanation-missing")
+            elif not isinstance(explanation, str):
+                errors.append(f"{prefix}-concept-explanation-invalid")
         if concepts and len(concept_ids) < 2:
             errors.append(f"{prefix}-concepts-insufficient")
 
