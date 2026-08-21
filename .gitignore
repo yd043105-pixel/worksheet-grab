@@ -10,6 +10,7 @@ progress.txt
 .omc/
 .fablize/
 .playwright-mcp/
+.worktrees/
 # 개발자 개인용 Claude 자동화는 제품 스킬과 분리해 추적하지 않음
 .claude/commands/
 .claude/hooks/
