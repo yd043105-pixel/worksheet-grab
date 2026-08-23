@@ -34,6 +34,15 @@ const gated = new ValidateWorksheet().execute(objectTreeDoc, renderedHtml); // �
 - 2차 교차: teacher 렌더의 `.answer`/`.plot-ans` 내부 텍스트(알려진 정답)를 뽑아 student 렌더 문자열에 그대로 남아있는지 grep. `richtext` 안 평문 정답처럼 1층이 놓친 케이스의 최종 방어선이다.
 - 1건이라도 잡히면 **FAIL**(layer:2).
 
+### 2-1-a 과학 수식 빈칸 점검
+- 계산·기체 법칙 활동지의 student 렌더에서 핵심 완성 공식이 formula 카드·표·풀이 줄에
+  미리 노출되지 않는지 확인한다.
+- student에는 변수·단위·적용 조건과 공식 작성용 빈칸이 남아 있어야 한다. 빈칸까지
+  `answer:true`로 감싸 물리 제거한 경우는 FAIL이다.
+- teacher 렌더에는 같은 위치의 공식과 `조건 → 식 변형 → 대입 → 단위 → 해석` 풀이가 있어야 한다.
+- 정답 공식이 student에 남으면 **FAIL**(layer:2, area:`formula-leak`), 공식 빈칸이 사라지면
+  **FAIL**(layer:2, area:`formula-writing-space`).
+
 ### 2-2. 인쇄 안전 warning
 - 문항이 페이지 경계에서 잘리지 않음(`break-inside:avoid`/`.keep`).
 - 본문 최소 폰트(≈9pt+), A4 인쇄 여백 확보, `word-break:keep-all`로 한글 단어 중간 분리 없음.

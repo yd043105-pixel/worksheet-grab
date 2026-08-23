@@ -103,6 +103,23 @@ test('개체 트리 경로: question.answerKey 는 answer:true 여부와 무관�
   assert.match(teacher, /누출되면안되는정답/, 'teacher 는 answerKey 유지');
 });
 
+test('수식 작성형 문항: student 는 공식 빈칸을 보존하고 teacher 만 완성식을 포함', () => {
+  const document = objDocWith([
+    {
+      id: 'formula-q1',
+      type: 'question',
+      placement: 'flow',
+      qtype: 'fill-blank',
+      prompt: '온도와 몰수가 일정할 때 관계식: ____________________',
+      answerKey: { text: 'P₁V₁ = P₂V₂' },
+    },
+  ]);
+  const { student, teacher } = new BuildVariants().executeObjectTree(document, OBJ_ASSETS);
+  assert.match(student, /관계식: ____________________/);
+  assert.ok(!student.includes('P₁V₁ = P₂V₂'), '완성 공식은 student 에 남으면 안 됨');
+  assert.match(teacher, /P₁V₁ = P₂V₂/);
+});
+
 test('개체 트리 경로: float 개체도 answer:true 면 동일하게 물리 제거된다', () => {
   const document = objDocWith([], [
     { id: 'sh1', type: 'shape', placement: 'float', rect: { xMm: 1, yMm: 1, wMm: 1, hMm: 1 }, shapeKind: 'rect', answer: true },

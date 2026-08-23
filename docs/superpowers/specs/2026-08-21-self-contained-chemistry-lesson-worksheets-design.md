@@ -50,6 +50,21 @@ The default 50-minute rhythm is:
 - One guided problem whose intermediate steps are partially supplied.
 - A short misconception comparison when the topic has a predictable wrong model.
 
+#### Formula construction for student learning
+
+For a chemistry calculation or gas-law lesson, the student variant must make the learner construct the
+central equation rather than merely copy a displayed formula.
+
+- Explain the variables, units, and applicability conditions before asking for the equation.
+- Show a verbal relationship or a partially specified symbolic frame, then leave the complete equation
+  as a writable blank for the student.
+- Keep the teacher's completed equation in `question.answerKey` or an `answer:true` object so the
+  student build physically removes it while preserving the blank writing space.
+- Sequence the work as `conditions -> variables/units -> equation -> rearrangement -> substitution ->
+  unit check -> interpretation`.
+- A lesson title may name a model such as the ideal-gas equation, but the complete target equality must
+  not be prefilled in a student-facing formula card, table cell, or worked-solution line.
+
 ### Optional Page 3: Application And Consolidation
 
 Use a third page only when the lesson includes a second major concept, substantial calculation, experimental data, or a transfer task.
@@ -249,6 +264,8 @@ Review lessons must not receive the same generic concept-map graphic used for or
 ### Variant And Print Gate
 
 - Student PDFs contain no answers, explanations labeled as answers, or teacher cues.
+- In calculation lessons, student PDFs do not expose the completed target equations; they retain writable
+  formula blanks, while teacher PDFs contain the corresponding equations and full solution steps.
 - Teacher PDFs preserve page correspondence with student PDFs.
 - All pages are A4, legible in grayscale, and free of clipping, overlap, orphan headings, and broken tables.
 - All final PDFs are rendered to images and visually inspected; automated checks confirm file pairing, page counts, text presence, and answer separation.
